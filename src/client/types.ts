@@ -17,4 +17,5 @@ export interface HandlerContext {
   serialState: Map<string, SerialTracker>;
   ensureStarted: () => void;
   emitState: EmitState;
+  closed: boolean;
 }

@@ -120,7 +120,7 @@ describe('AblyChatTransport', () => {
     it('uses custom channelName function', async () => {
       const customTransport = new AblyChatTransport({
         ably: mockAbly,
-        channelName: (id) => `custom:${id}`,
+        channelName: (chatId) => `custom:${chatId}`,
         fetch: mockFetch,
       });
 

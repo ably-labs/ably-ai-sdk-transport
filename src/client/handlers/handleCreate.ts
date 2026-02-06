@@ -93,6 +93,7 @@ export function handleCreate(
 
   if (name === 'finish') {
     const parsed = parseJsonData(message.data);
+    ctx.closed = true;
     ctx.controller.enqueue({
       type: 'finish',
       finishReason: parsed.finishReason as FinishChunk['finishReason'],
@@ -106,6 +107,7 @@ export function handleCreate(
 
   if (name === 'error') {
     const parsed = parseJsonData(message.data);
+    ctx.closed = true;
     ctx.controller.enqueue({
       type: 'error',
       errorText: (parsed.errorText as string) ?? 'Unknown error',
@@ -115,6 +117,7 @@ export function handleCreate(
   }
 
   if (name === 'abort') {
+    ctx.closed = true;
     ctx.controller.enqueue({ type: 'abort' });
     ctx.controller.close();
     return;

@@ -5,7 +5,7 @@ import type {
   UIMessageChunk,
   ChatRequestOptions,
 } from 'ai';
-import type { SerialTracker, EmitState } from './types.js';
+import type { SerialTracker, EmitState, HandlerContext } from './types.js';
 import { createEnsureStarted } from './utils.js';
 import { handleCreate } from './handlers/handleCreate.js';
 import { handleAppend } from './handlers/handleAppend.js';
@@ -16,7 +16,7 @@ export interface AblyChatTransportOptions {
   ably: Ably.Realtime;
   api?: string;
   headers?: Record<string, string>;
-  channelName?: string | ((chatId: string) => string);
+  channelName?: (chatId: string) => string;
   fetch?: typeof globalThis.fetch;
   reconnectHistoryLimit?: number;
 }
@@ -33,9 +33,7 @@ export class AblyChatTransport implements ChatTransport<UIMessage> {
     this.ably = options.ably;
     this.api = options.api ?? '/api/chat';
     this.defaultHeaders = options.headers ?? {};
-    this.channelName = typeof options.channelName === 'function'
-      ? options.channelName
-      : ((chatId) => options.channelName ?? `chat:${chatId}`);
+    this.channelName = options.channelName ?? ((chatId) => `ait:${chatId}`);
     this.fetchFn = options.fetch ?? globalThis.fetch.bind(globalThis);
     this.reconnectHistoryLimit = options.reconnectHistoryLimit ?? 100;
   }
@@ -56,21 +54,20 @@ export class AblyChatTransport implements ChatTransport<UIMessage> {
 
     const serialState = new Map<string, SerialTracker>();
     const emitState = { hasEmittedStart: false, hasEmittedStepStart: false };
-    let closed = false;
 
     const stream = new ReadableStream<UIMessageChunk>({
       start: (controller) => {
         const ensureStarted = createEnsureStarted(controller, emitState);
 
-        const ctx = { controller, serialState, ensureStarted, emitState };
+        const ctx = { controller, serialState, ensureStarted, emitState, closed: false };
 
         channel.subscribe((message: Ably.InboundMessage) => {
-          if (closed) return;
+          if (ctx.closed) return;
           try {
             this.routeMessage(message, ctx);
           } catch (err) {
-            if (closed) return;
-            closed = true;
+            if (ctx.closed) return;
+            ctx.closed = true;
             controller.enqueue({
               type: 'error',
               errorText:
@@ -82,8 +79,8 @@ export class AblyChatTransport implements ChatTransport<UIMessage> {
         });
 
         channel.on('failed', (stateChange: Ably.ChannelStateChange) => {
-          if (closed) return;
-          closed = true;
+          if (ctx.closed) return;
+          ctx.closed = true;
           controller.enqueue({
             type: 'error',
             errorText: `Channel error: ${stateChange.reason?.message ?? 'unknown'}`,
@@ -92,8 +89,8 @@ export class AblyChatTransport implements ChatTransport<UIMessage> {
         });
 
         abortSignal?.addEventListener('abort', () => {
-          if (closed) return;
-          closed = true;
+          if (ctx.closed) return;
+          ctx.closed = true;
           channel.unsubscribe();
           channel.detach();
           controller.close();
@@ -101,7 +98,6 @@ export class AblyChatTransport implements ChatTransport<UIMessage> {
       },
 
       cancel: () => {
-        closed = true;
         channel.unsubscribe();
         channel.detach();
       },
@@ -148,10 +144,7 @@ export class AblyChatTransport implements ChatTransport<UIMessage> {
       let replayingHistory = true;
 
       // These will be set in the stream's start() callback
-      let controller: ReadableStreamDefaultController<UIMessageChunk>;
-      let serialState: Map<string, SerialTracker>;
-      let ensureStarted: () => void;
-      let closed = false;
+      let ctx: HandlerContext;
 
       await channel.subscribe((message: Ably.InboundMessage) => {
         if (replayingHistory) {
@@ -159,23 +152,18 @@ export class AblyChatTransport implements ChatTransport<UIMessage> {
           // we have processed the history backlog
           liveBuffer.push(message);
         } else {
-          if (closed) return;
+          if (ctx.closed) return;
           try {
-            this.routeMessage(message, {
-              controller,
-              serialState,
-              ensureStarted,
-              emitState,
-            });
+            this.routeMessage(message, ctx);
           } catch (err) {
-            if (closed) return;
-            closed = true;
-            controller.enqueue({
+            if (ctx.closed) return;
+            ctx.closed = true;
+            ctx.controller.enqueue({
               type: 'error',
               errorText:
                 err instanceof Error ? err.message : 'Unknown transport error',
             });
-            controller.close();
+            ctx.controller.close();
             channel.unsubscribe();
           }
         }
@@ -207,32 +195,30 @@ export class AblyChatTransport implements ChatTransport<UIMessage> {
       }
 
       // Create the stream
-      serialState = new Map<string, SerialTracker>();
+      const serialState = new Map<string, SerialTracker>();
       const emitState = { hasEmittedStart: false, hasEmittedStepStart: false };
 
       return new ReadableStream<UIMessageChunk>({
-        start: (ctrl) => {
-          controller = ctrl;
-          ensureStarted = createEnsureStarted(controller, emitState);
-
-          const ctx = { controller, serialState, ensureStarted, emitState };
+        start: (controller) => {
+          const ensureStarted = createEnsureStarted(controller, emitState);
+          ctx = { controller, serialState, ensureStarted, emitState, closed: false };
 
           // Replay history (oldest first)
           const oldest = [...historyMessages].reverse();
           for (const msg of oldest) {
-            if (closed) return;
+            if (ctx.closed) return;
             handleHistory(msg, ctx);
           }
 
           // Flush buffered live messages (untilAttach guarantees no overlap)
           replayingHistory = false;
           for (const msg of liveBuffer) {
-            if (closed) return;
+            if (ctx.closed) return;
             try {
               this.routeMessage(msg, ctx);
             } catch (err) {
-              if (closed) return;
-              closed = true;
+              if (ctx.closed) return;
+              ctx.closed = true;
               controller.enqueue({
                 type: 'error',
                 errorText:
@@ -249,7 +235,7 @@ export class AblyChatTransport implements ChatTransport<UIMessage> {
         },
 
         cancel: () => {
-          closed = true;
+          if (ctx) ctx.closed = true;
           channel.unsubscribe();
           channel.detach();
         },
@@ -263,12 +249,7 @@ export class AblyChatTransport implements ChatTransport<UIMessage> {
 
   private routeMessage(
     message: Ably.InboundMessage,
-    ctx: {
-      controller: ReadableStreamDefaultController<UIMessageChunk>;
-      serialState: Map<string, SerialTracker>;
-      ensureStarted: () => void;
-      emitState: EmitState;
-    },
+    ctx: HandlerContext,
   ): void {
     const action = message.action;
 
