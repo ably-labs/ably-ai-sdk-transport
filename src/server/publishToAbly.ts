@@ -293,8 +293,10 @@ export async function publishToAbly(options: PublishToAblyOptions): Promise<void
               data: JSON.stringify({
                 data: dataChunk.data,
                 ...(dataChunk.id != null ? { id: dataChunk.id } : {}),
-                ...(dataChunk.transient ? { ephemeral: true } : {}),
               }),
+              ...(dataChunk.transient
+                ? { extras: { ephemeral: true } }
+                : {}),
             });
           }
           break;

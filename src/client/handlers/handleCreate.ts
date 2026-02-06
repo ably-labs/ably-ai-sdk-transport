@@ -179,7 +179,7 @@ export function handleCreate(
       type: name as `data-${string}`,
       data: parsed.data,
       ...(parsed.id != null ? { id: parsed.id as string } : {}),
-      ...(parsed.transient ? { transient: true } : {}),
+      ...(message.extras?.ephemeral ? { transient: true } : {}),
     } as any);
     return;
   }

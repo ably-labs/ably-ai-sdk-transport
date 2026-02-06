@@ -286,7 +286,8 @@ describe('handleCreate', () => {
   it('data-custom — enqueues data-custom chunk', () => {
     const msg = buildMessage({
       name: 'data-custom',
-      data: JSON.stringify({ data: { foo: 'bar' }, id: 'dc-1', transient: true }),
+      data: JSON.stringify({ data: { foo: 'bar' }, id: 'dc-1' }),
+      extras: { ephemeral: true },
     });
 
     handleCreate(msg, ctx);

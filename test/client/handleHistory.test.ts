@@ -367,7 +367,8 @@ describe('handleHistory', () => {
     it('data-custom emits data chunk', () => {
       const msg = makeMessage({
         name: 'data-custom',
-        data: JSON.stringify({ data: { key: 'value' }, id: 'dc1', transient: true }),
+        data: JSON.stringify({ data: { key: 'value' }, id: 'dc1' }),
+        extras: { ephemeral: true },
       });
       handleHistory(msg, ctx);
 
