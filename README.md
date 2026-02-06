@@ -25,8 +25,9 @@ npm install @ably/ai-sdk-transport ably ai
 ### 1. Client — use with `useChat()`
 
 ```tsx
+import { useState } from 'react';
 import Ably from 'ably';
-import { useChat } from 'ai/react';
+import { useChat } from '@ai-sdk/react';
 import { AblyChatTransport } from '@ably/ai-sdk-transport';
 
 const ably = new Ably.Realtime({ authUrl: '/api/ably-token' });
@@ -37,17 +38,23 @@ const transport = new AblyChatTransport({
 });
 
 function Chat() {
-  const { messages, input, handleInputChange, handleSubmit } = useChat({
-    transport,
-  });
+  const { messages, sendMessage } = useChat({ transport });
+  const [input, setInput] = useState('');
 
   return (
     <div>
       {messages.map((m) => (
         <div key={m.id}>{m.parts.map((p) => p.type === 'text' && p.text)}</div>
       ))}
-      <form onSubmit={handleSubmit}>
-        <input value={input} onChange={handleInputChange} />
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (!input.trim()) return;
+          sendMessage({ text: input });
+          setInput('');
+        }}
+      >
+        <input value={input} onChange={(e) => setInput(e.target.value)} />
       </form>
     </div>
   );
@@ -59,7 +66,7 @@ function Chat() {
 ```typescript
 // app/api/chat/route.ts (Next.js App Router)
 import Ably from 'ably';
-import { streamText } from 'ai';
+import { streamText, convertToModelMessages } from 'ai';
 import { openai } from '@ai-sdk/openai';
 import { publishToAbly } from '@ably/ai-sdk-transport';
 
@@ -70,10 +77,10 @@ export async function POST(req: Request) {
 
   const result = streamText({
     model: openai('gpt-4o'),
-    messages,
+    messages: await convertToModelMessages(messages),
   });
 
-  const channel = ablyServer.channels.get(`chat:${id}`);
+  const channel = ablyServer.channels.get(`ait:${id}`);
   const stream = result.toUIMessageStream();
 
   // Publish in the background — don't block the response
@@ -84,6 +91,20 @@ export async function POST(req: Request) {
 ```
 
 ### 3. Ably configuration
+
+This transport uses Ably's [mutable messages](https://ably.com/docs/messages/mutable) feature (`message.create`, `message.append`, `message.update`) to stream AI responses incrementally. Mutable messages must be explicitly enabled via a channel rule in the Ably dashboard.
+
+#### Enable mutable messages
+
+1. Open the [Ably dashboard](https://ably.com/accounts) and select your app
+2. Go to the **Settings** tab
+3. Under **Configuration** -> **Rules**, click **Add new rule**
+4. Set the namespace to `ait` (this matches the default `channelName` used by the transport)
+5. Enable **Message interactions (annotations, updates, deletes, and appends)**
+
+> **Note:** If you configure a custom `channelName` when creating the transport, the namespace in your channel rule must match. For example, if your channel name is `my-ai:response`, the rule namespace should be `my-ai`.
+
+#### Token authentication
 
 Create a token authentication endpoint:
 
@@ -96,7 +117,7 @@ const ably = new Ably.Rest({ key: process.env.ABLY_API_KEY });
 export async function GET() {
   const token = await ably.auth.createTokenRequest({
     clientId: 'user-id',
-    capability: { 'chat:*': ['subscribe', 'history'] },
+    capability: { 'ait:*': ['subscribe', 'history'] },
   });
   return Response.json(token);
 }
@@ -121,7 +142,7 @@ const transport = new AblyChatTransport(options);
 | `ably` | `Ably.Realtime` | *required* | Ably Realtime client instance |
 | `api` | `string` | `'/api/chat'` | Server endpoint URL |
 | `headers` | `Record<string, string>` | `{}` | Default headers for HTTP requests |
-| `channelName` | `(chatId: string) => string` | `` chatId => `chat:${chatId}` `` | Custom channel naming function |
+| `channelName` | `(chatId: string) => string` | `` chatId => `ait:${chatId}` `` | Custom channel naming function |
 | `fetch` | `typeof fetch` | `globalThis.fetch` | Custom fetch implementation |
 
 #### Methods
@@ -166,7 +187,7 @@ if (stream) {
 
 ## Channel Configuration
 
-By default, channels are named `chat:{chatId}`. Customize this with the `channelName` option:
+By default, channels are named `ait:{chatId}`. Customize this with the `channelName` option:
 
 ```typescript
 const transport = new AblyChatTransport({
@@ -199,7 +220,7 @@ app.post('/api/chat', express.json(), async (req, res) => {
     messages,
   });
 
-  const channel = ably.channels.get(`chat:${id}`);
+  const channel = ably.channels.get(`ait:${id}`);
   publishToAbly({ channel, stream: result.toUIMessageStream() });
 
   res.status(202).end();
