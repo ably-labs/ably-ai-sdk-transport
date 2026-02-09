@@ -7,7 +7,15 @@ import { AblyChatTransport, debugStream } from '@ably/ai-sdk-transport';
 
 const inner = new AblyChatTransport({
   ably: new Ably.Realtime({
-    authUrl: '/api/ably-token',
+    authCallback: async (_tokenParams, callback) => {
+      try {
+        const response = await fetch('/api/ably-token');
+        const token = await response.text();
+        callback(null, token);
+      } catch (error) {
+        callback(error instanceof Error ? error.message : String(error), null);
+      }
+    },
     autoConnect: typeof window !== 'undefined',
   }),
   api: '/api/chat',

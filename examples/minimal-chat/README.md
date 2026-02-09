@@ -20,9 +20,9 @@ examples/minimal-chat/
 
 ## How it works
 
-- **`page.tsx`** — `'use client'` component that creates `Ably.Realtime` with `authUrl` and `AblyChatTransport` in `useMemo`, passes `transport` to `useChat()`, renders messages via `m.parts` filtering for text parts
+- **`page.tsx`** — `'use client'` component that creates `Ably.Realtime` with `authCallback` and `AblyChatTransport`, passes `transport` to `useChat()`, renders messages via `m.parts` filtering for text parts
 - **`api/chat/route.ts`** — Module-scoped Ably Realtime client, POST handler parses `{ id, messages }`, calls `streamText` with `anthropic('claude-sonnet-4-20250514')`, publishes via `publishToAbly`, returns `202`
-- **`api/ably-token/route.ts`** — Module-scoped Ably Rest client, GET handler creates token request with `clientId: 'anonymous'`
+- **`api/ably-token/route.ts`** — GET handler that signs a JWT using the Ably API key secret, with an `x-ably-capability` claim, returned as `application/jwt`
 
 ## Prerequisites
 
