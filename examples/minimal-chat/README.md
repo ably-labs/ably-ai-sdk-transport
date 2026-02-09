@@ -2,6 +2,8 @@
 
 A minimal working example demonstrating `@ably/ai-sdk-transport` end-to-end: a Next.js app with a chat UI that streams Claude responses through Ably pub/sub.
 
+<video src="assets/resumable-token-streaming.webm" controls width="100%"></video>
+
 ## Files
 
 ```
