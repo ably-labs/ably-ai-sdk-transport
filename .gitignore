@@ -4,5 +4,6 @@ coverage/
 *.tsbuildinfo
 .env
 .env.*
+!.env.local.example
 **/*.swp
 .next/
