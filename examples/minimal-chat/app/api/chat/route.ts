@@ -14,7 +14,7 @@ export async function POST(req: Request) {
     messages: await convertToModelMessages(messages),
   });
 
-  const channel = ablyServer.channels.get(`ait:myAppChat`);
+  const channel = ablyServer.channels.get(process.env.NEXT_PUBLIC_ABLY_CHANNEL_NAME || 'ai:minimal-chat');
   publishToAbly({ channel, stream: result.toUIMessageStream() });
 
   return new Response(null, { status: 202 });

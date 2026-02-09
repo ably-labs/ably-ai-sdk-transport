@@ -11,7 +11,7 @@ const inner = new AblyChatTransport({
     autoConnect: typeof window !== 'undefined',
   }),
   api: '/api/chat',
-  channelName: () => `ait:myAppChat`,
+  channelName: () => process.env.NEXT_PUBLIC_ABLY_CHANNEL_NAME || 'ai:minimal-chat',
 });
 
 // Wrap the transport so every event gets debug-logged to the console

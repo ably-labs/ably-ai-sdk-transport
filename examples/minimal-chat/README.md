@@ -24,6 +24,12 @@ examples/minimal-chat/
 - **`api/chat/route.ts`** — Module-scoped Ably Realtime client, POST handler parses `{ id, messages }`, calls `streamText` with `anthropic('claude-sonnet-4-20250514')`, publishes via `publishToAbly`, returns `202`
 - **`api/ably-token/route.ts`** — Module-scoped Ably Rest client, GET handler creates token request with `clientId: 'anonymous'`
 
+## Prerequisites
+
+The channel name is set via `NEXT_PUBLIC_ABLY_CHANNEL_NAME` (defaults to `ai:minimal-chat`). The namespace portion of the channel name (the part before the `:`, e.g. `ai`) must have a channel rule in the [Ably dashboard](https://ably.com/accounts) with **Message updates, deletes, and appends** enabled.
+
+For example, if your channel name is `ai:minimal-chat`, create a channel rule for the `ai` namespace. See the [message-per-response docs](https://ably.com/docs/ai-transport/token-streaming/message-per-response#enable) for details.
+
 ## Running
 
 ```sh
