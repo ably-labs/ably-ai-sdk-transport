@@ -5,36 +5,30 @@ import type {
   UIMessageChunk,
   ChatRequestOptions,
 } from 'ai';
-import type { SerialTracker, EmitState, HandlerContext } from './types.js';
+import type { SerialTracker, HandlerContext } from './types.js';
 import { createEnsureStarted } from './utils.js';
 import { handleCreate } from './handlers/handleCreate.js';
 import { handleAppend } from './handlers/handleAppend.js';
 import { handleUpdate } from './handlers/handleUpdate.js';
 import { handleHistory } from './handlers/handleHistory.js';
 
+/** Names of messages published by the client — used for echo filtering. */
+const CLIENT_MESSAGE_NAMES = new Set(['chat-message', 'regenerate', 'user-abort']);
+
 export interface AblyChatTransportOptions {
   ably: Ably.Realtime;
-  api?: string;
-  headers?: Record<string, string>;
   channelName?: (chatId: string) => string;
-  fetch?: typeof globalThis.fetch;
   reconnectHistoryLimit?: number;
 }
 
 export class AblyChatTransport implements ChatTransport<UIMessage> {
   private readonly ably: Ably.Realtime;
-  private readonly api: string;
-  private readonly defaultHeaders: Record<string, string>;
   private readonly channelName: (chatId: string) => string;
-  private readonly fetchFn: typeof globalThis.fetch;
   private readonly reconnectHistoryLimit: number;
 
   constructor(options: AblyChatTransportOptions) {
     this.ably = options.ably;
-    this.api = options.api ?? '/api/chat';
-    this.defaultHeaders = options.headers ?? {};
     this.channelName = options.channelName ?? ((chatId) => `ait:${chatId}`);
-    this.fetchFn = options.fetch ?? globalThis.fetch.bind(globalThis);
     this.reconnectHistoryLimit = options.reconnectHistoryLimit ?? 100;
   }
 
@@ -47,13 +41,14 @@ export class AblyChatTransport implements ChatTransport<UIMessage> {
       abortSignal: AbortSignal | undefined;
     } & ChatRequestOptions,
   ): Promise<ReadableStream<UIMessageChunk>> {
-    const { trigger, chatId, messageId, messages, abortSignal, headers, body } =
-      options;
+    const { trigger, chatId, messageId, messages, abortSignal } = options;
 
     const channel = this.ably.channels.get(this.channelName(chatId));
 
     const serialState = new Map<string, SerialTracker>();
     const emitState = { hasEmittedStart: false, hasEmittedStepStart: false };
+
+    const extras = { headers: { role: 'user' } };
 
     const stream = new ReadableStream<UIMessageChunk>({
       start: (controller) => {
@@ -63,6 +58,8 @@ export class AblyChatTransport implements ChatTransport<UIMessage> {
 
         channel.subscribe((message: Ably.InboundMessage) => {
           if (ctx.closed) return;
+          // Echo filtering: skip messages published by the client
+          if (message.name && CLIENT_MESSAGE_NAMES.has(message.name)) return;
           try {
             this.routeMessage(message, ctx);
           } catch (err) {
@@ -90,10 +87,13 @@ export class AblyChatTransport implements ChatTransport<UIMessage> {
 
         abortSignal?.addEventListener('abort', () => {
           if (ctx.closed) return;
-          ctx.closed = true;
-          channel.unsubscribe();
-          channel.detach();
-          controller.close();
+          // Publish user-abort to notify the server, but don't close the stream
+          // — the server may still send final messages.
+          channel.publish({
+            name: 'user-abort',
+            data: JSON.stringify({ chatId }),
+            extras,
+          });
         });
       },
 
@@ -103,28 +103,25 @@ export class AblyChatTransport implements ChatTransport<UIMessage> {
       },
     });
 
-    // Send the HTTP request to trigger server-side generation
-    const response = await this.fetchFn(this.api, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...this.defaultHeaders,
-        ...headers,
-      } as Record<string, string>,
-      body: JSON.stringify({
-        id: chatId,
-        messages,
-        trigger,
-        ...(messageId != null ? { messageId } : {}),
-        ...body,
-      }),
-      signal: abortSignal,
-    });
-
-    if (!response.ok) {
-      throw new Error(
-        `Chat request failed: ${response.status} ${response.statusText}`,
-      );
+    // Publish the trigger message via Ably channel (replacing the old HTTP POST)
+    if (trigger === 'submit-message') {
+      await channel.publish({
+        name: 'chat-message',
+        data: JSON.stringify({
+          message: messages[messages.length - 1],
+          chatId,
+        }),
+        extras,
+      });
+    } else if (trigger === 'regenerate-message') {
+      await channel.publish({
+        name: 'regenerate',
+        data: JSON.stringify({
+          chatId,
+          ...(messageId != null ? { messageId } : {}),
+        }),
+        extras,
+      });
     }
 
     return stream;
@@ -147,6 +144,9 @@ export class AblyChatTransport implements ChatTransport<UIMessage> {
       let ctx: HandlerContext;
 
       await channel.subscribe((message: Ably.InboundMessage) => {
+        // Echo filtering: skip client-published messages
+        if (message.name && CLIENT_MESSAGE_NAMES.has(message.name)) return;
+
         if (replayingHistory) {
           // If we are still replaying history, buffer live messages until
           // we have processed the history backlog

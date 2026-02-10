@@ -12,6 +12,8 @@ interface SerialState {
   type: 'text' | 'reasoning' | 'tool-input';
 }
 
+const ASSISTANT_EXTRAS = { headers: { role: 'assistant' } };
+
 export async function publishToAbly(options: PublishToAblyOptions): Promise<void> {
   const { channel, stream, abortSignal } = options;
 
@@ -22,7 +24,7 @@ export async function publishToAbly(options: PublishToAblyOptions): Promise<void
   try {
     while (true) {
       if (abortSignal?.aborted) {
-        await channel.publish({ name: 'abort', data: '{}' });
+        await channel.publish({ name: 'abort', data: '{}', extras: ASSISTANT_EXTRAS });
         break;
       }
 
@@ -42,7 +44,7 @@ export async function publishToAbly(options: PublishToAblyOptions): Promise<void
         }
 
         case 'finish-step': {
-          await channel.publish({ name: 'step-finish', data: '{}' });
+          await channel.publish({ name: 'step-finish', data: '{}', extras: ASSISTANT_EXTRAS });
           break;
         }
 
@@ -55,6 +57,7 @@ export async function publishToAbly(options: PublishToAblyOptions): Promise<void
                 ? { messageMetadata: chunk.messageMetadata }
                 : {}),
             }),
+            extras: ASSISTANT_EXTRAS,
           });
           break;
         }
@@ -63,6 +66,7 @@ export async function publishToAbly(options: PublishToAblyOptions): Promise<void
           await channel.publish({
             name: 'abort',
             data: '{}',
+            extras: ASSISTANT_EXTRAS,
           });
           break;
         }
@@ -71,6 +75,7 @@ export async function publishToAbly(options: PublishToAblyOptions): Promise<void
           await channel.publish({
             name: 'error',
             data: JSON.stringify({ errorText: chunk.errorText }),
+            extras: ASSISTANT_EXTRAS,
           });
           break;
         }
@@ -81,6 +86,7 @@ export async function publishToAbly(options: PublishToAblyOptions): Promise<void
             data: JSON.stringify({
               messageMetadata: chunk.messageMetadata,
             }),
+            extras: ASSISTANT_EXTRAS,
           });
           break;
         }
@@ -90,6 +96,7 @@ export async function publishToAbly(options: PublishToAblyOptions): Promise<void
           const result = await channel.publish({
             name: `text:${chunk.id}`,
             data: '',
+            extras: ASSISTANT_EXTRAS,
           });
           serials.set(chunk.id, {
             serial: result.serials[0]!,
@@ -125,6 +132,7 @@ export async function publishToAbly(options: PublishToAblyOptions): Promise<void
           const result = await channel.publish({
             name: `reasoning:${chunk.id}`,
             data: '',
+            extras: ASSISTANT_EXTRAS,
           });
           serials.set(chunk.id, {
             serial: result.serials[0]!,
@@ -159,6 +167,7 @@ export async function publishToAbly(options: PublishToAblyOptions): Promise<void
           const result = await channel.publish({
             name: `tool:${chunk.toolCallId}:${chunk.toolName}`,
             data: '',
+            extras: ASSISTANT_EXTRAS,
           });
           serials.set(chunk.toolCallId, {
             serial: result.serials[0]!,
@@ -192,7 +201,7 @@ export async function publishToAbly(options: PublishToAblyOptions): Promise<void
               name: `tool:${chunk.toolCallId}:${chunk.toolName}`,
               data: JSON.stringify(chunk.input),
               extras: {
-                headers: { event: 'tool-input-available' },
+                headers: { event: 'tool-input-available', role: 'assistant' },
               },
             });
             serials.set(chunk.toolCallId, {
@@ -247,6 +256,7 @@ export async function publishToAbly(options: PublishToAblyOptions): Promise<void
               url: chunk.url,
               mediaType: chunk.mediaType,
             }),
+            extras: ASSISTANT_EXTRAS,
           });
           break;
         }
@@ -259,6 +269,7 @@ export async function publishToAbly(options: PublishToAblyOptions): Promise<void
               url: chunk.url,
               ...(chunk.title != null ? { title: chunk.title } : {}),
             }),
+            extras: ASSISTANT_EXTRAS,
           });
           break;
         }
@@ -274,6 +285,7 @@ export async function publishToAbly(options: PublishToAblyOptions): Promise<void
                 ? { filename: chunk.filename }
                 : {}),
             }),
+            extras: ASSISTANT_EXTRAS,
           });
           break;
         }
@@ -295,8 +307,8 @@ export async function publishToAbly(options: PublishToAblyOptions): Promise<void
                 ...(dataChunk.id != null ? { id: dataChunk.id } : {}),
               }),
               ...(dataChunk.transient
-                ? { extras: { ephemeral: true } }
-                : {}),
+                ? { extras: { ephemeral: true, headers: { role: 'assistant' } } }
+                : { extras: ASSISTANT_EXTRAS }),
             });
           }
           break;
@@ -308,6 +320,7 @@ export async function publishToAbly(options: PublishToAblyOptions): Promise<void
     await channel.publish({
       name: 'error',
       data: JSON.stringify({ errorText }),
+      extras: ASSISTANT_EXTRAS,
     });
     throw err;
   } finally {

@@ -452,6 +452,23 @@ describe('publishToAbly', () => {
       expect(data.data).toEqual({ percent: 50 });
       expect(data.id).toBe('p1');
     });
+
+    it('publishes transient data-* chunks with both ephemeral and role header', async () => {
+      const stream = createChunkStream([
+        { type: 'data-progress', data: { percent: 50 }, id: 'p1', transient: true } as any,
+      ]);
+
+      await publishToAbly({ channel, stream });
+
+      const dataCall = channel.publishCalls.find(
+        (c) => c.message.name === 'data-progress',
+      );
+      expect(dataCall).toBeDefined();
+      expect(dataCall!.message.extras).toEqual({
+        ephemeral: true,
+        headers: { role: 'assistant' },
+      });
+    });
   });
 
   describe('error handling', () => {

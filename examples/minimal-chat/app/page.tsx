@@ -1,32 +1,47 @@
 'use client';
 
 import { useChat } from '@ai-sdk/react';
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import * as Ably from 'ably';
 import { AblyChatTransport, debugStream } from '@ably/ai-sdk-transport';
 
-const inner = new AblyChatTransport({
-  ably: new Ably.Realtime({
-    authUrl: '/api/ably-token',
-    autoConnect: typeof window !== 'undefined',
-  }),
-  api: '/api/chat',
-  channelName: () => `ait:myAppChat`,
-});
-
-// Wrap the transport so every event gets debug-logged to the console
-const transport = {
-  sendMessages: async (...args: Parameters<typeof inner.sendMessages>) => {
-    const stream = await inner.sendMessages(...args);
-    return debugStream(stream, 'send');
-  },
-  reconnectToStream: async (...args: Parameters<typeof inner.reconnectToStream>) => {
-    const stream = await inner.reconnectToStream(...args);
-    return stream ? debugStream(stream, 'reconnect') : null;
-  },
-};
+const DEFAULT_CHANNEL = 'ait:myChatApp';
 
 export default function Chat() {
+  const searchParams = useSearchParams();
+  const channelName = searchParams.get('channel') || DEFAULT_CHANNEL;
+
+  const transport = useMemo(() => {
+    const inner = new AblyChatTransport({
+      ably: new Ably.Realtime({
+        authUrl: '/api/ably-token',
+        autoConnect: typeof window !== 'undefined',
+      }),
+      channelName: () => channelName,
+    });
+
+    return {
+      sendMessages: async (...args: Parameters<typeof inner.sendMessages>) => {
+        const stream = await inner.sendMessages(...args);
+        return debugStream(stream, 'send');
+      },
+      reconnectToStream: async (...args: Parameters<typeof inner.reconnectToStream>) => {
+        const stream = await inner.reconnectToStream(...args);
+        return stream ? debugStream(stream, 'reconnect') : null;
+      },
+    };
+  }, [channelName]);
+
+  // Tell the server to subscribe to this channel
+  useEffect(() => {
+    fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ channelName }),
+    }).catch((err) => console.error('Failed to start server subscription:', err));
+  }, [channelName]);
+
   const { messages, sendMessage } = useChat({ transport });
   const [input, setInput] = useState('');
 

@@ -5,6 +5,7 @@ const ablyRest = new Ably.Rest({ key: process.env.ABLY_API_KEY });
 export async function GET() {
   const tokenRequest = await ablyRest.auth.createTokenRequest({
     clientId: 'anonymous',
+    capability: { 'ait:*': ['subscribe', 'publish', 'history'] },
   });
   return Response.json(tokenRequest);
 }
