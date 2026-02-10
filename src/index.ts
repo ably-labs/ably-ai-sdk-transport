@@ -1,7 +1,8 @@
-export { AblyChatTransport } from './client/AblyChatTransport.js';
-export type { AblyChatTransportOptions } from './client/AblyChatTransport.js';
-export { debugStream } from './client/debugStream.js';
-export { publishToAbly } from './server/publishToAbly.js';
-export type { PublishToAblyOptions } from './server/publishToAbly.js';
-export { subscribeToChannel } from './server/subscribeToChannel.js';
-export type { SubscribeToChannelOptions } from './server/subscribeToChannel.js';
+export { AblyChatTransport } from './client/AblyChatTransport';
+export type { AblyChatTransportOptions, LoadChatHistoryResult } from './client/AblyChatTransport';
+export { debugStream, debugTransport } from './client/debugStream';
+export { publishToAbly } from './server/publishToAbly';
+export type { PublishToAblyOptions } from './server/publishToAbly';
+export { subscribeToChannel } from './server/subscribeToChannel';
+export type { SubscribeToChannelOptions } from './server/subscribeToChannel';
+export { reconstructMessages } from './shared';

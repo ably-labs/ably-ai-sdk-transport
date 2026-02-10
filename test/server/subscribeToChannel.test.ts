@@ -43,7 +43,7 @@ describe('subscribeToChannel', () => {
       name: 'chat-message',
       action: 'message.create',
       serial: 'S1',
-      data: JSON.stringify({ message: userMsg, chatId: 'chat-1' }),
+      data: JSON.stringify({ message: userMsg }),
       extras: { headers: { role: 'user' } },
     });
 
@@ -55,7 +55,6 @@ describe('subscribeToChannel', () => {
     expect(callArgs.messages).toHaveLength(1);
     expect(callArgs.messages[0].id).toBe('msg-1');
     expect(callArgs.trigger).toBe('submit-message');
-    expect(callArgs.chatId).toBe('chat-1');
     expect(callArgs.abortSignal).toBeInstanceOf(AbortSignal);
   });
 
@@ -73,7 +72,6 @@ describe('subscribeToChannel', () => {
       serial: 'S1',
       data: JSON.stringify({
         message: makeUserMessage('msg-1', 'First'),
-        chatId: 'chat-1',
       }),
       extras: { headers: { role: 'user' } },
     });
@@ -87,7 +85,6 @@ describe('subscribeToChannel', () => {
       serial: 'S2',
       data: JSON.stringify({
         message: makeUserMessage('msg-2', 'Second'),
-        chatId: 'chat-1',
       }),
       extras: { headers: { role: 'user' } },
     });
@@ -115,7 +112,7 @@ describe('subscribeToChannel', () => {
       name: 'chat-message',
       action: 'message.create',
       serial: 'S1',
-      data: JSON.stringify({ message: userMsg, chatId: 'chat-1' }),
+      data: JSON.stringify({ message: userMsg }),
       extras: { headers: { role: 'user' } },
     });
 
@@ -125,7 +122,7 @@ describe('subscribeToChannel', () => {
       name: 'chat-message',
       action: 'message.create',
       serial: 'S2',
-      data: JSON.stringify({ message: userMsg, chatId: 'chat-1' }),
+      data: JSON.stringify({ message: userMsg }),
       extras: { headers: { role: 'user' } },
     });
 
@@ -150,7 +147,6 @@ describe('subscribeToChannel', () => {
       serial: 'S1',
       data: JSON.stringify({
         message: makeUserMessage('msg-1', 'Hello'),
-        chatId: 'chat-1',
       }),
       extras: { headers: { role: 'user' } },
     });
@@ -162,7 +158,7 @@ describe('subscribeToChannel', () => {
       name: 'regenerate',
       action: 'message.create',
       serial: 'S2',
-      data: JSON.stringify({ chatId: 'chat-1' }),
+      data: JSON.stringify({}),
       extras: { headers: { role: 'user' } },
     });
 
@@ -195,7 +191,6 @@ describe('subscribeToChannel', () => {
       serial: 'S1',
       data: JSON.stringify({
         message: makeUserMessage('msg-1', 'Hello'),
-        chatId: 'chat-1',
       }),
       extras: { headers: { role: 'user' } },
     });
@@ -209,56 +204,12 @@ describe('subscribeToChannel', () => {
       name: 'user-abort',
       action: 'message.create',
       serial: 'S2',
-      data: JSON.stringify({ chatId: 'chat-1' }),
+      data: JSON.stringify({}),
       extras: { headers: { role: 'user' } },
     });
 
     await new Promise((r) => setTimeout(r, 20));
     expect(capturedSignal!.aborted).toBe(true);
-  });
-
-  it('isolates conversations by chatId', async () => {
-    const handler = vi.fn().mockImplementation(() =>
-      Promise.resolve(makeAssistantStream('Response')),
-    );
-
-    subscribeToChannel({ channel, handler });
-
-    // Message to chat-1
-    channel.simulateMessage({
-      name: 'chat-message',
-      action: 'message.create',
-      serial: 'S1',
-      data: JSON.stringify({
-        message: makeUserMessage('msg-1', 'Hello from chat 1'),
-        chatId: 'chat-1',
-      }),
-      extras: { headers: { role: 'user' } },
-    });
-
-    await new Promise((r) => setTimeout(r, 50));
-
-    // Message to chat-2
-    channel.simulateMessage({
-      name: 'chat-message',
-      action: 'message.create',
-      serial: 'S2',
-      data: JSON.stringify({
-        message: makeUserMessage('msg-2', 'Hello from chat 2'),
-        chatId: 'chat-2',
-      }),
-      extras: { headers: { role: 'user' } },
-    });
-
-    await new Promise((r) => setTimeout(r, 50));
-
-    expect(handler).toHaveBeenCalledTimes(2);
-    // chat-1 should have 1 message
-    expect(handler.mock.calls[0][0].messages).toHaveLength(1);
-    expect(handler.mock.calls[0][0].chatId).toBe('chat-1');
-    // chat-2 should have 1 message (separate store)
-    expect(handler.mock.calls[1][0].messages).toHaveLength(1);
-    expect(handler.mock.calls[1][0].chatId).toBe('chat-2');
   });
 
   it('skips messages without role: user header', async () => {
@@ -291,7 +242,7 @@ describe('subscribeToChannel', () => {
       });
     });
 
-    const cleanup = subscribeToChannel({ channel, handler });
+    const cleanup = await subscribeToChannel({ channel, handler });
 
     // Start a generation
     channel.simulateMessage({
@@ -300,7 +251,6 @@ describe('subscribeToChannel', () => {
       serial: 'S1',
       data: JSON.stringify({
         message: makeUserMessage('msg-1', 'Hello'),
-        chatId: 'chat-1',
       }),
       extras: { headers: { role: 'user' } },
     });
@@ -313,5 +263,163 @@ describe('subscribeToChannel', () => {
     expect(capturedSignal!.aborted).toBe(true);
     // Listeners should be cleared
     expect(channel.listeners).toHaveLength(0);
+  });
+
+  it('seeds conversation with initialMessages', async () => {
+    const handler = vi.fn().mockResolvedValue(makeAssistantStream('Response'));
+
+    const initial = [
+      makeUserMessage('init-1', 'Preloaded message'),
+    ];
+
+    subscribeToChannel({ channel, handler, initialMessages: initial });
+
+    // Send a new message
+    channel.simulateMessage({
+      name: 'chat-message',
+      action: 'message.create',
+      serial: 'S1',
+      data: JSON.stringify({
+        message: makeUserMessage('msg-1', 'Hello'),
+      }),
+      extras: { headers: { role: 'user' } },
+    });
+
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(handler).toHaveBeenCalledOnce();
+    const callArgs = handler.mock.calls[0][0];
+    expect(callArgs.messages).toHaveLength(2);
+    expect(callArgs.messages[0].id).toBe('init-1');
+    expect(callArgs.messages[1].id).toBe('msg-1');
+  });
+
+  it('deduplicates history against initialMessages', async () => {
+    const handler = vi.fn().mockResolvedValue(makeAssistantStream('Response'));
+
+    const initial = [
+      makeUserMessage('hist-1', 'Old message'),
+    ];
+
+    // Pre-populate history with the same message ID
+    (channel as any).publishedMessages.push(
+      {
+        name: 'chat-message',
+        data: JSON.stringify({
+          message: makeUserMessage('hist-1', 'Old message'),
+          chatId: 'chat-1',
+        }),
+        serial: 'H1',
+        action: 'message.create',
+        id: 'H1',
+        timestamp: Date.now(),
+        version: { serial: 'H1', timestamp: Date.now() },
+        annotations: { summary: {} },
+      },
+      {
+        name: 'finish',
+        data: '{"finishReason":"stop"}',
+        serial: 'H2',
+        action: 'message.create',
+        id: 'H2',
+        timestamp: Date.now(),
+        version: { serial: 'H2', timestamp: Date.now() },
+        annotations: { summary: {} },
+      },
+    );
+
+    subscribeToChannel({ channel, handler, initialMessages: initial });
+
+    // Wait for history seeding
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Send a new message
+    channel.simulateMessage({
+      name: 'chat-message',
+      action: 'message.create',
+      serial: 'S1',
+      data: JSON.stringify({
+        message: makeUserMessage('msg-1', 'New message'),
+      }),
+      extras: { headers: { role: 'user' } },
+    });
+
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(handler).toHaveBeenCalledOnce();
+    const callArgs = handler.mock.calls[0][0];
+    // Should have init-1 (from initialMessages) + msg-1 (new), NOT a duplicate hist-1
+    expect(callArgs.messages).toHaveLength(2);
+    expect(callArgs.messages[0].id).toBe('hist-1');
+    expect(callArgs.messages[1].id).toBe('msg-1');
+  });
+
+  it('seeds conversation from channel history on attach', async () => {
+    const handler = vi.fn().mockResolvedValue(makeAssistantStream('Response'));
+
+    // Pre-populate history via the mock channel
+    (channel as any).publishedMessages.push(
+      {
+        name: 'chat-message',
+        data: JSON.stringify({
+          message: makeUserMessage('hist-1', 'Old message'),
+          chatId: 'chat-1',
+        }),
+        serial: 'H1',
+        action: 'message.create',
+        id: 'H1',
+        timestamp: Date.now(),
+        version: { serial: 'H1', timestamp: Date.now() },
+        annotations: { summary: {} },
+      },
+      {
+        name: 'text:t0',
+        data: 'Old response',
+        serial: 'H2',
+        action: 'message.create',
+        id: 'H2',
+        timestamp: Date.now(),
+        version: { serial: 'H2', timestamp: Date.now() },
+        annotations: { summary: {} },
+      },
+      {
+        name: 'finish',
+        data: '{"finishReason":"stop"}',
+        serial: 'H3',
+        action: 'message.create',
+        id: 'H3',
+        timestamp: Date.now(),
+        version: { serial: 'H3', timestamp: Date.now() },
+        annotations: { summary: {} },
+      },
+    );
+
+    subscribeToChannel({ channel, handler });
+
+    // Wait for subscribe + history seeding
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Now send a new message — handler should see the seeded history + new message
+    channel.simulateMessage({
+      name: 'chat-message',
+      action: 'message.create',
+      serial: 'S1',
+      data: JSON.stringify({
+        message: makeUserMessage('msg-1', 'New message'),
+      }),
+      extras: { headers: { role: 'user' } },
+    });
+
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(handler).toHaveBeenCalledOnce();
+    const callArgs = handler.mock.calls[0][0];
+    // Should have seeded user + assistant + new user = 3 messages
+    expect(callArgs.messages).toHaveLength(3);
+    expect(callArgs.messages[0].role).toBe('user');
+    expect(callArgs.messages[0].id).toBe('hist-1');
+    expect(callArgs.messages[1].role).toBe('assistant');
+    expect(callArgs.messages[2].role).toBe('user');
+    expect(callArgs.messages[2].id).toBe('msg-1');
   });
 });

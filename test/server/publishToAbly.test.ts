@@ -166,7 +166,7 @@ describe('publishToAbly', () => {
 
       // Verify create
       const createCall = channel.publishCalls.find(
-        (c) => c.message.name === 'text:text-0',
+        (c) => c.message.name?.startsWith('text:'),
       );
       expect(createCall).toBeDefined();
       expect(createCall!.message.data).toBe('');
@@ -200,7 +200,7 @@ describe('publishToAbly', () => {
       await publishToAbly({ channel, stream });
 
       const createCall = channel.publishCalls.find(
-        (c) => c.message.name === 'reasoning:r-0',
+        (c) => c.message.name?.startsWith('reasoning:'),
       );
       expect(createCall).toBeDefined();
 

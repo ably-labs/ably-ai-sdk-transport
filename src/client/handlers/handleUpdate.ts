@@ -1,6 +1,6 @@
 import type { InboundMessage } from 'ably';
 import type { HandlerContext } from '../types.js';
-import { parseData, parseJsonData } from '../utils.js';
+import { parseData, parseJsonData, createTrackerFromName } from '../utils.js';
 
 export function handleUpdate(
   message: InboundMessage,
@@ -50,8 +50,22 @@ export function handleUpdate(
 
   // ── Append delivered as update (conflation) ─────
   const event = message.version?.metadata?.event;
-  const tracker = ctx.serialState.get(message.serial!);
-  if (!tracker) return;
+  let tracker = ctx.serialState.get(message.serial!);
+  if (!tracker) {
+    // Orphan update — the create was in history, not in the buffer.
+    const created = createTrackerFromName(name);
+    if (!created) return;
+    tracker = created;
+    ctx.serialState.set(message.serial!, tracker);
+    ctx.ensureStarted();
+    if (tracker.type === 'text') {
+      ctx.controller.enqueue({ type: 'text-start', id: tracker.id });
+    } else if (tracker.type === 'reasoning') {
+      ctx.controller.enqueue({ type: 'reasoning-start', id: tracker.id });
+    } else if (tracker.type === 'tool-input') {
+      ctx.controller.enqueue({ type: 'tool-input-start', toolCallId: tracker.id, toolName: tracker.toolName! });
+    }
+  }
 
   ctx.ensureStarted();
 

@@ -19,7 +19,7 @@ export async function POST(request: Request) {
 
   const channel = ablyServer.channels.get(channelName);
 
-  subscribeToChannel({
+  await subscribeToChannel({
     channel,
     handler: async ({ messages, abortSignal }) => {
       console.log(`[${channelName}] Received messages:`, messages);

@@ -93,8 +93,9 @@ export async function publishToAbly(options: PublishToAblyOptions): Promise<void
 
         // ── Text streaming ────────────────────────────
         case 'text-start': {
+          const uniqueId = crypto.randomUUID();
           const result = await channel.publish({
-            name: `text:${chunk.id}`,
+            name: `text:${uniqueId}`,
             data: '',
             extras: ASSISTANT_EXTRAS,
           });
@@ -129,8 +130,9 @@ export async function publishToAbly(options: PublishToAblyOptions): Promise<void
 
         // ── Reasoning streaming ───────────────────────
         case 'reasoning-start': {
+          const uniqueId = crypto.randomUUID();
           const result = await channel.publish({
-            name: `reasoning:${chunk.id}`,
+            name: `reasoning:${uniqueId}`,
             data: '',
             extras: ASSISTANT_EXTRAS,
           });

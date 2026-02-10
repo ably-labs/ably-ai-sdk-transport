@@ -5,31 +5,113 @@ import type {
   UIMessageChunk,
   ChatRequestOptions,
 } from 'ai';
-import type { SerialTracker, HandlerContext } from './types.js';
-import { createEnsureStarted } from './utils.js';
-import { handleCreate } from './handlers/handleCreate.js';
-import { handleAppend } from './handlers/handleAppend.js';
-import { handleUpdate } from './handlers/handleUpdate.js';
-import { handleHistory } from './handlers/handleHistory.js';
+import type { SerialTracker, HandlerContext } from './types';
+import { createEnsureStarted, reconstructMessages, TERMINAL_NAMES } from './utils';
+import { handleCreate } from './handlers/handleCreate';
+import { handleAppend } from './handlers/handleAppend';
+import { handleUpdate } from './handlers/handleUpdate';
 
 /** Names of messages published by the client — used for echo filtering. */
 const CLIENT_MESSAGE_NAMES = new Set(['chat-message', 'regenerate', 'user-abort']);
 
 export interface AblyChatTransportOptions {
   ably: Ably.Realtime;
-  channelName?: (chatId: string) => string;
-  reconnectHistoryLimit?: number;
+  channelName: string;
+  historyLimit?: number;
+}
+
+export interface LoadChatHistoryResult {
+  messages: UIMessage[];
+  hasActiveStream: boolean;
+}
+
+/**
+ * Simple async push/pull queue for buffering Ably messages.
+ */
+class MessageBuffer {
+  private queue: Ably.InboundMessage[] = [];
+  private resolver: ((msg: Ably.InboundMessage | null) => void) | null = null;
+
+  push(msg: Ably.InboundMessage): void {
+    if (this.resolver) {
+      this.resolver(msg);
+      this.resolver = null;
+    } else {
+      this.queue.push(msg);
+    }
+  }
+
+  async pull(): Promise<Ably.InboundMessage | null> {
+    if (this.queue.length > 0) return this.queue.shift()!;
+    return new Promise((resolve) => {
+      this.resolver = resolve;
+    });
+  }
+
+  get isEmpty(): boolean {
+    return this.queue.length === 0;
+  }
+
+  clear(): void {
+    this.queue.length = 0;
+  }
+
+  cancel(): void {
+    if (this.resolver) {
+      this.resolver(null);
+      this.resolver = null;
+    }
+  }
 }
 
 export class AblyChatTransport implements ChatTransport<UIMessage> {
-  private readonly ably: Ably.Realtime;
-  private readonly channelName: (chatId: string) => string;
-  private readonly reconnectHistoryLimit: number;
+  private readonly channel: Ably.RealtimeChannel;
+  private readonly buffer: MessageBuffer;
+  private readonly historyLimit: number;
+  private readonly attached: Promise<unknown>;
+  private _hasActiveStream = false;
 
   constructor(options: AblyChatTransportOptions) {
-    this.ably = options.ably;
-    this.channelName = options.channelName ?? ((chatId) => `ait:${chatId}`);
-    this.reconnectHistoryLimit = options.reconnectHistoryLimit ?? 100;
+    this.historyLimit = options.historyLimit ?? 100;
+    this.buffer = new MessageBuffer();
+    this.channel = options.ably.channels.get(options.channelName);
+    // subscribe() returns a promise that resolves once the channel is attached
+    this.attached = this.channel.subscribe((msg: Ably.InboundMessage) => {
+      if (msg.name && CLIENT_MESSAGE_NAMES.has(msg.name)) return;
+      this.buffer.push(msg);
+    });
+  }
+
+  /**
+   * Load chat history from the channel using `history({untilAttach:true})`.
+   *
+   * Returns reconstructed UIMessage[] and whether a stream is currently active.
+   */
+  async loadChatHistory(options?: { limit?: number }): Promise<LoadChatHistoryResult> {
+    const limit = options?.limit ?? this.historyLimit;
+
+    await this.attached;
+    const history = await this.channel.history({ untilAttach: true, limit });
+    const items = history.items;
+
+    if (items.length === 0) {
+      this._hasActiveStream = false;
+      return { messages: [], hasActiveStream: false };
+    }
+
+    // Check if stream is active: newest message is not terminal
+    const newest = items[0]; // history returns newest-first
+    const newestName = newest.name ?? '';
+    const hasActiveStream = !TERMINAL_NAMES.has(newestName);
+    this._hasActiveStream = hasActiveStream;
+
+    // Sort chronologically by serial (history returns newest-first)
+    const chronological = [...items].sort((a, b) => ((a.serial ?? '') > (b.serial ?? '') ? 1 : -1));
+
+    // Reconstruct UIMessage[]
+    const messages = reconstructMessages(chronological);
+
+    return { messages, hasActiveStream };
   }
 
   async sendMessages(
@@ -41,179 +123,79 @@ export class AblyChatTransport implements ChatTransport<UIMessage> {
       abortSignal: AbortSignal | undefined;
     } & ChatRequestOptions,
   ): Promise<ReadableStream<UIMessageChunk>> {
-    const { trigger, chatId, messageId, messages, abortSignal } = options;
-
-    const channel = this.ably.channels.get(this.channelName(chatId));
-
-    const serialState = new Map<string, SerialTracker>();
-    const emitState = { hasEmittedStart: false, hasEmittedStepStart: false };
-
+    const { trigger, messageId, messages, abortSignal } = options;
     const extras = { headers: { role: 'user' } };
 
-    const stream = new ReadableStream<UIMessageChunk>({
-      start: (controller) => {
-        const ensureStarted = createEnsureStarted(controller, emitState);
+    // Clear stale messages from other devices/previous exchanges.
+    this.buffer.clear();
 
-        const ctx = { controller, serialState, ensureStarted, emitState, closed: false };
-
-        channel.subscribe((message: Ably.InboundMessage) => {
-          if (ctx.closed) return;
-          // Echo filtering: skip messages published by the client
-          if (message.name && CLIENT_MESSAGE_NAMES.has(message.name)) return;
-          try {
-            this.routeMessage(message, ctx);
-          } catch (err) {
-            if (ctx.closed) return;
-            ctx.closed = true;
-            controller.enqueue({
-              type: 'error',
-              errorText:
-                err instanceof Error ? err.message : 'Unknown transport error',
-            });
-            controller.close();
-            channel.unsubscribe();
-          }
-        });
-
-        channel.on('failed', (stateChange: Ably.ChannelStateChange) => {
-          if (ctx.closed) return;
-          ctx.closed = true;
-          controller.enqueue({
-            type: 'error',
-            errorText: `Channel error: ${stateChange.reason?.message ?? 'unknown'}`,
-          });
-          controller.close();
-        });
-
-        abortSignal?.addEventListener('abort', () => {
-          if (ctx.closed) return;
-          // Publish user-abort to notify the server, but don't close the stream
-          // — the server may still send final messages.
-          channel.publish({
-            name: 'user-abort',
-            data: JSON.stringify({ chatId }),
-            extras,
-          });
-        });
-      },
-
-      cancel: () => {
-        channel.unsubscribe();
-        channel.detach();
-      },
-    });
-
-    // Publish the trigger message via Ably channel (replacing the old HTTP POST)
+    // Publish the trigger message
     if (trigger === 'submit-message') {
-      await channel.publish({
+      await this.channel.publish({
         name: 'chat-message',
         data: JSON.stringify({
           message: messages[messages.length - 1],
-          chatId,
         }),
         extras,
       });
     } else if (trigger === 'regenerate-message') {
-      await channel.publish({
+      await this.channel.publish({
         name: 'regenerate',
         data: JSON.stringify({
-          chatId,
           ...(messageId != null ? { messageId } : {}),
         }),
         extras,
       });
     }
 
-    return stream;
+    // Return a stream that drains the buffer until 'finish'
+    return this.createDrainStream(abortSignal);
   }
 
   async reconnectToStream(
-    options: {
+    _options: {
       chatId: string;
     } & ChatRequestOptions,
   ): Promise<ReadableStream<UIMessageChunk> | null> {
-    const { chatId } = options;
-    const channel = this.ably.channels.get(this.channelName(chatId));
+    if (!this._hasActiveStream && this.buffer.isEmpty) return null;
+    this._hasActiveStream = false;
+    return this.createDrainStream();
+  }
 
-    try {
-      // Step 1: Subscribe first — buffer live messages while querying history
-      const liveBuffer: Ably.InboundMessage[] = [];
-      let replayingHistory = true;
+  close(): void {
+    this.buffer.cancel();
+    this.channel.unsubscribe();
+    this.channel.detach();
+  }
 
-      // These will be set in the stream's start() callback
-      let ctx: HandlerContext;
+  private createDrainStream(
+    abortSignal?: AbortSignal,
+  ): ReadableStream<UIMessageChunk> {
+    const channel = this.channel;
+    const buffer = this.buffer;
+    const extras = { headers: { role: 'user' } };
 
-      await channel.subscribe((message: Ably.InboundMessage) => {
-        // Echo filtering: skip client-published messages
-        if (message.name && CLIENT_MESSAGE_NAMES.has(message.name)) return;
+    const serialState = new Map<string, SerialTracker>();
+    const emitState = { hasEmittedStart: false, hasEmittedStepStart: false };
 
-        if (replayingHistory) {
-          // If we are still replaying history, buffer live messages until
-          // we have processed the history backlog
-          liveBuffer.push(message);
-        } else {
+    return new ReadableStream<UIMessageChunk>({
+      start: (controller) => {
+        const ensureStarted = createEnsureStarted(controller, emitState);
+        const ctx: HandlerContext = { controller, serialState, ensureStarted, emitState, closed: false };
+
+        abortSignal?.addEventListener('abort', () => {
           if (ctx.closed) return;
-          try {
-            this.routeMessage(message, ctx);
-          } catch (err) {
-            if (ctx.closed) return;
-            ctx.closed = true;
-            ctx.controller.enqueue({
-              type: 'error',
-              errorText:
-                err instanceof Error ? err.message : 'Unknown transport error',
-            });
-            ctx.controller.close();
-            channel.unsubscribe();
-          }
-        }
-      });
+          channel.publish({
+            name: 'user-abort',
+            extras,
+          });
+        });
 
-      // Step 2: Query history with untilAttach to align boundary with attach point
-      const history = await channel.history({
-        untilAttach: true,
-        limit: this.reconnectHistoryLimit,
-      });
-      const historyMessages = history.items;
-
-      if (historyMessages.length === 0) {
-        channel.unsubscribe();
-        channel.detach();
-        return null;
-      }
-
-      // Check if the stream is complete
-      const lastMsg = historyMessages[0]; // history is newest-first
-      if (
-        lastMsg.name === 'finish' ||
-        lastMsg.name === 'error' ||
-        lastMsg.name === 'abort'
-      ) {
-        channel.unsubscribe();
-        channel.detach();
-        return null;
-      }
-
-      // Create the stream
-      const serialState = new Map<string, SerialTracker>();
-      const emitState = { hasEmittedStart: false, hasEmittedStepStart: false };
-
-      return new ReadableStream<UIMessageChunk>({
-        start: (controller) => {
-          const ensureStarted = createEnsureStarted(controller, emitState);
-          ctx = { controller, serialState, ensureStarted, emitState, closed: false };
-
-          // Replay history (oldest first)
-          const oldest = [...historyMessages].reverse();
-          for (const msg of oldest) {
-            if (ctx.closed) return;
-            handleHistory(msg, ctx);
-          }
-
-          // Flush buffered live messages (untilAttach guarantees no overlap)
-          replayingHistory = false;
-          for (const msg of liveBuffer) {
-            if (ctx.closed) return;
+        // Async drain loop
+        const drain = async () => {
+          while (!ctx.closed) {
+            const msg = await buffer.pull();
+            if (msg === null) break; // cancelled
             try {
               this.routeMessage(msg, ctx);
             } catch (err) {
@@ -222,29 +204,19 @@ export class AblyChatTransport implements ChatTransport<UIMessage> {
               controller.enqueue({
                 type: 'error',
                 errorText:
-                  err instanceof Error
-                    ? err.message
-                    : 'Unknown transport error',
+                  err instanceof Error ? err.message : 'Unknown transport error',
               });
               controller.close();
-              channel.unsubscribe();
-              return;
             }
           }
-          liveBuffer.length = 0;
-        },
+        };
+        drain();
+      },
 
-        cancel: () => {
-          if (ctx) ctx.closed = true;
-          channel.unsubscribe();
-          channel.detach();
-        },
-      });
-    } catch {
-      channel.unsubscribe();
-      channel.detach();
-      return null;
-    }
+      cancel: () => {
+        buffer.cancel(); // unblock pending pull
+      },
+    });
   }
 
   private routeMessage(

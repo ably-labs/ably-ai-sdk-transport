@@ -4,34 +4,28 @@ import { useChat } from '@ai-sdk/react';
 import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import * as Ably from 'ably';
-import { AblyChatTransport, debugStream } from '@ably/ai-sdk-transport';
+import { AblyChatTransport } from '@ably/ai-sdk-transport';
 
 const DEFAULT_CHANNEL = 'ait:myChatApp';
 
 export default function Chat() {
+  // Get the channel name from query params or default
   const searchParams = useSearchParams();
   const channelName = searchParams.get('channel') || DEFAULT_CHANNEL;
 
   const transport = useMemo(() => {
-    const inner = new AblyChatTransport({
+    return new AblyChatTransport({
       ably: new Ably.Realtime({
         authUrl: '/api/ably-token',
         autoConnect: typeof window !== 'undefined',
       }),
-      channelName: () => channelName,
+      channelName, // transport supports exactly one channel.
     });
-
-    return {
-      sendMessages: async (...args: Parameters<typeof inner.sendMessages>) => {
-        const stream = await inner.sendMessages(...args);
-        return debugStream(stream, 'send');
-      },
-      reconnectToStream: async (...args: Parameters<typeof inner.reconnectToStream>) => {
-        const stream = await inner.reconnectToStream(...args);
-        return stream ? debugStream(stream, 'reconnect') : null;
-      },
-    };
   }, [channelName]);
+
+  useEffect(() => {
+    return () => transport.close();
+  }, [transport]);
 
   // Tell the server to subscribe to this channel
   useEffect(() => {
@@ -42,12 +36,41 @@ export default function Chat() {
     }).catch((err) => console.error('Failed to start server subscription:', err));
   }, [channelName]);
 
-  const { messages, sendMessage } = useChat({ transport });
+  // optionally wrap the transport for debug logging
+  // transport = debugTransport(transport)
+
+  const { messages, sendMessage, setMessages, resumeStream } = useChat({ transport });
   const [input, setInput] = useState('');
+  const [isLoading, setIsLoading] = useState(true);
+
+  // Load history on mount and when transport changes
+  useEffect(() => {
+    let cancelled = false;
+    setIsLoading(true);
+    transport.loadChatHistory()
+      .then((result) => {
+        if (cancelled) return;
+        if (result.messages.length > 0) {
+          setMessages(result.messages);
+        }
+        if (result.hasActiveStream) {
+          resumeStream();
+        }
+      })
+      .catch(console.error)
+      .finally(() => {
+        if (!cancelled) setIsLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [transport, setMessages, resumeStream]);
 
   return (
     <main style={{ maxWidth: 600, margin: '0 auto', padding: '2rem' }}>
       <h1>Minimal Chat</h1>
+
+      {isLoading && (
+        <div style={{ marginBottom: '1rem', color: '#888' }}>Loading history...</div>
+      )}
 
       <div style={{ marginBottom: '1rem' }}>
         {messages.map((m) => (

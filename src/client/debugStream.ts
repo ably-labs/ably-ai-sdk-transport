@@ -1,4 +1,4 @@
-import type { UIMessageChunk } from 'ai';
+import type { ChatTransport, UIMessage, UIMessageChunk } from 'ai';
 
 /**
  * Wraps a ReadableStream<UIMessageChunk> with a pass-through that logs each
@@ -7,9 +7,6 @@ import type { UIMessageChunk } from 'ai';
  *
  * Usage:
  *   import { debugStream } from '@ably/ai-sdk-transport';
- *   const transport = new AblyChatTransport({ ... });
- *   const logged = new AblyChatTransport({ ... });
- *   // — or wrap manually:
  *   const stream = await transport.sendMessages(opts);
  *   const debugged = debugStream(stream);
  */
@@ -30,4 +27,28 @@ export function debugStream(
   });
 
   return stream.pipeThrough(transform);
+}
+
+/**
+ * Wraps a ChatTransport so that every stream returned by `sendMessages` and
+ * `reconnectToStream` is piped through `debugStream`, logging each chunk.
+ *
+ * Usage:
+ *   import { AblyChatTransport, debugTransport } from '@ably/ai-sdk-transport';
+ *   const transport = new AblyChatTransport({ ... });
+ *   const { messages } = useChat({ transport: debugTransport(transport) });
+ */
+export function debugTransport(
+  transport: ChatTransport<UIMessage>,
+): ChatTransport<UIMessage> {
+  return {
+    sendMessages: async (...args) => {
+      const stream = await transport.sendMessages(...args);
+      return debugStream(stream, 'send');
+    },
+    reconnectToStream: async (...args) => {
+      const stream = await transport.reconnectToStream(...args);
+      return stream ? debugStream(stream, 'reconnect') : null;
+    },
+  };
 }
