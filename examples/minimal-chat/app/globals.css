@@ -31,6 +31,57 @@
   color: #888;
 }
 
+.agent-status {
+  margin-bottom: 1rem;
+  font-size: 0.9rem;
+}
+
+.status-checking {
+  color: #888;
+}
+
+.status-connected {
+  color: #22c55e;
+}
+
+.status-connected::before {
+  content: '';
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #22c55e;
+  margin-right: 6px;
+}
+
+.status-disconnected {
+  color: #ef4444;
+}
+
+.status-disconnected::before {
+  content: '';
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #ef4444;
+  margin-right: 6px;
+}
+
+.reconnect-button {
+  margin-left: 0.5rem;
+  padding: 0.2rem 0.6rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  background: #fff;
+}
+
+.reconnect-button:hover {
+  background: #f0f0f0;
+}
+
 /* Markdown styles within chat messages */
 .chat-message pre {
   background: #f4f4f4;

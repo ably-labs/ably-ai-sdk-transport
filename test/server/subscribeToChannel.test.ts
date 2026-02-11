@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { subscribeToChannel } from '../../src/server/subscribeToChannel.js';
-import { createMockChannel, resetSerialCounter } from '../helpers/mockAbly.js';
+import { createMockChannel, resetSerialCounter, type MockPresence } from '../helpers/mockAbly.js';
 import { createChunkStream } from '../helpers/streamHelpers.js';
 import { makeUserMessage } from '../helpers/messageBuilders.js';
 import type { UIMessage, UIMessageChunk } from 'ai';
@@ -440,6 +440,61 @@ describe('subscribeToChannel', () => {
     for (const call of regenPublishes) {
       expect(call.message.extras?.headers?.role).toBe('assistant');
     }
+  });
+
+  describe('presence', () => {
+    it('enters presence when presence option is provided', async () => {
+      const handler = vi.fn().mockResolvedValue(makeAssistantStream('Hi'));
+      await subscribeToChannel({ channel, handler, presence: {} });
+
+      const presence = channel.presence as unknown as MockPresence;
+      expect(presence.enterClientCalls).toHaveLength(1);
+      expect(presence.enterClientCalls[0].clientId).toBe('agent');
+      expect(presence.enterClientCalls[0].data).toEqual({ type: 'agent' });
+    });
+
+    it('uses custom clientId and data', async () => {
+      const handler = vi.fn().mockResolvedValue(makeAssistantStream('Hi'));
+      await subscribeToChannel({
+        channel,
+        handler,
+        presence: { clientId: 'my-bot', data: { version: '2.0' } },
+      });
+
+      const presence = channel.presence as unknown as MockPresence;
+      expect(presence.enterClientCalls).toHaveLength(1);
+      expect(presence.enterClientCalls[0].clientId).toBe('my-bot');
+      expect(presence.enterClientCalls[0].data).toEqual({ type: 'agent', version: '2.0' });
+    });
+
+    it('does not enter presence when option is omitted', async () => {
+      const handler = vi.fn().mockResolvedValue(makeAssistantStream('Hi'));
+      await subscribeToChannel({ channel, handler });
+
+      const presence = channel.presence as unknown as MockPresence;
+      expect(presence.enterClientCalls).toHaveLength(0);
+    });
+
+    it('cleanup calls leaveClient', async () => {
+      const handler = vi.fn().mockResolvedValue(makeAssistantStream('Hi'));
+      const cleanup = await subscribeToChannel({ channel, handler, presence: {} });
+
+      cleanup();
+
+      const presence = channel.presence as unknown as MockPresence;
+      expect(presence.leaveClientCalls).toHaveLength(1);
+      expect(presence.leaveClientCalls[0].clientId).toBe('agent');
+    });
+
+    it('cleanup does not call leaveClient when presence was not configured', async () => {
+      const handler = vi.fn().mockResolvedValue(makeAssistantStream('Hi'));
+      const cleanup = await subscribeToChannel({ channel, handler });
+
+      cleanup();
+
+      const presence = channel.presence as unknown as MockPresence;
+      expect(presence.leaveClientCalls).toHaveLength(0);
+    });
   });
 
   it('seeds conversation from channel history on attach', async () => {

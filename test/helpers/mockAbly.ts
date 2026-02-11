@@ -16,6 +16,7 @@ interface UpdateCall {
 
 type MessageListener = (message: Ably.InboundMessage) => void;
 type StateListener = (stateChange: Ably.ChannelStateChange) => void;
+type PresenceListener = (message: Ably.PresenceMessage) => void;
 
 let serialCounter = 0;
 
@@ -26,6 +27,118 @@ export function resetSerialCounter(): void {
 function nextSerial(): string {
   serialCounter++;
   return `serial-${String(serialCounter).padStart(4, '0')}`;
+}
+
+export interface MockPresence {
+  enterClientCalls: Array<{ clientId: string; data?: any }>;
+  leaveClientCalls: Array<{ clientId: string; data?: any }>;
+  members: Map<string, Ably.PresenceMessage>;
+  enterListeners: PresenceListener[];
+  leaveListeners: PresenceListener[];
+  simulateEnter: (member: Partial<Ably.PresenceMessage>) => void;
+  simulateLeave: (member: Partial<Ably.PresenceMessage>) => void;
+  subscribe: (action: Ably.PresenceAction | Ably.PresenceAction[], listener?: PresenceListener) => Promise<void>;
+  unsubscribe: (action: Ably.PresenceAction | Ably.PresenceAction[], listener?: PresenceListener) => void;
+  get: (params?: any) => Promise<Ably.PresenceMessage[]>;
+  enterClient: (clientId: string, data?: any) => Promise<void>;
+  leaveClient: (clientId: string, data?: any) => Promise<void>;
+  enter: (data?: any) => Promise<void>;
+  leave: (data?: any) => Promise<void>;
+}
+
+export function createMockPresence(): MockPresence {
+  const members = new Map<string, Ably.PresenceMessage>();
+  const enterListeners: PresenceListener[] = [];
+  const leaveListeners: PresenceListener[] = [];
+  const enterClientCalls: Array<{ clientId: string; data?: any }> = [];
+  const leaveClientCalls: Array<{ clientId: string; data?: any }> = [];
+
+  function makePresenceMessage(partial: Partial<Ably.PresenceMessage>): Ably.PresenceMessage {
+    return {
+      action: partial.action ?? 'enter',
+      clientId: partial.clientId ?? 'unknown',
+      connectionId: partial.connectionId ?? `conn-${partial.clientId ?? 'unknown'}`,
+      data: partial.data ?? null,
+      encoding: partial.encoding ?? '',
+      extras: partial.extras ?? null,
+      id: partial.id ?? `presence-${Date.now()}`,
+      timestamp: partial.timestamp ?? Date.now(),
+      ...partial,
+    } as Ably.PresenceMessage;
+  }
+
+  return {
+    enterClientCalls,
+    leaveClientCalls,
+    members,
+    enterListeners,
+    leaveListeners,
+
+    simulateEnter(partial: Partial<Ably.PresenceMessage>) {
+      const msg = makePresenceMessage({ action: 'enter', ...partial });
+      members.set(msg.connectionId, msg);
+      for (const listener of [...enterListeners]) {
+        listener(msg);
+      }
+    },
+
+    simulateLeave(partial: Partial<Ably.PresenceMessage>) {
+      const msg = makePresenceMessage({ action: 'leave', ...partial });
+      members.delete(msg.connectionId);
+      for (const listener of [...leaveListeners]) {
+        listener(msg);
+      }
+    },
+
+    subscribe(action: Ably.PresenceAction | Ably.PresenceAction[], listener?: PresenceListener): Promise<void> {
+      if (!listener) return Promise.resolve();
+      const actions = Array.isArray(action) ? action : [action];
+      for (const a of actions) {
+        if (a === 'enter') enterListeners.push(listener);
+        if (a === 'leave') leaveListeners.push(listener);
+      }
+      return Promise.resolve();
+    },
+
+    unsubscribe(action: Ably.PresenceAction | Ably.PresenceAction[], listener?: PresenceListener): void {
+      const actions = Array.isArray(action) ? action : [action];
+      for (const a of actions) {
+        if (a === 'enter' && listener) {
+          const idx = enterListeners.indexOf(listener);
+          if (idx !== -1) enterListeners.splice(idx, 1);
+        }
+        if (a === 'leave' && listener) {
+          const idx = leaveListeners.indexOf(listener);
+          if (idx !== -1) leaveListeners.splice(idx, 1);
+        }
+      }
+    },
+
+    get(): Promise<Ably.PresenceMessage[]> {
+      return Promise.resolve([...members.values()]);
+    },
+
+    enterClient(clientId: string, data?: any): Promise<void> {
+      enterClientCalls.push({ clientId, data });
+      const msg = makePresenceMessage({ clientId, data, action: 'enter', connectionId: `conn-${clientId}` });
+      members.set(msg.connectionId, msg);
+      return Promise.resolve();
+    },
+
+    leaveClient(clientId: string, data?: any): Promise<void> {
+      leaveClientCalls.push({ clientId, data });
+      members.delete(`conn-${clientId}`);
+      return Promise.resolve();
+    },
+
+    enter(): Promise<void> {
+      return Promise.resolve();
+    },
+
+    leave(): Promise<void> {
+      return Promise.resolve();
+    },
+  };
 }
 
 export function createMockChannel(): Ably.RealtimeChannel & {
@@ -225,7 +338,7 @@ export function createMockChannel(): Ably.RealtimeChannel & {
     errorReason: null as any,
     params: {},
     modes: [],
-    presence: {} as any,
+    presence: createMockPresence() as any,
     push: {} as any,
     annotations: {} as any,
     setOptions: () => Promise.resolve(),

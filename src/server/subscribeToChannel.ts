@@ -15,10 +15,20 @@ export interface SubscribeToChannelOptions {
   historyLimit?: number;
   /** Messages to seed the conversation with before history is loaded. */
   initialMessages?: UIMessage[];
+  /**
+   * If provided, enter presence on the channel so clients can detect the agent is online.
+   * Uses `enterClient` (suitable for API-key auth without a connection-level clientId).
+   */
+  presence?: {
+    /** The clientId to enter presence with. Defaults to `'agent'`. */
+    clientId?: string;
+    /** Additional data to merge with `{ type: 'agent' }`. */
+    data?: Record<string, unknown>;
+  };
 }
 
 export async function subscribeToChannel(options: SubscribeToChannelOptions): Promise<() => void> {
-  const { channel, handler, historyLimit = 100, initialMessages = [] } = options;
+  const { channel, handler, historyLimit = 100, initialMessages = [], presence } = options;
 
   /** Single conversation state for this channel. */
   const messages: UIMessage[] = [...initialMessages];
@@ -184,9 +194,19 @@ export async function subscribeToChannel(options: SubscribeToChannelOptions): Pr
     messages.push(...seeded.filter((m) => !existingIds.has(m.id)));
   });
 
+  // Enter presence if configured (channel is attached after subscribe resolves)
+  const presenceClientId = presence?.clientId ?? 'agent';
+  const presenceData = presence ? { type: 'agent', ...presence.data } : undefined;
+  if (presence) {
+    await channel.presence.enterClient(presenceClientId, presenceData);
+  }
+
   // Return cleanup function
   return () => {
     channel.unsubscribe();
+    if (presence) {
+      channel.presence.leaveClient(presenceClientId, presenceData).catch(() => {});
+    }
     if (inflight) {
       inflight.controller.abort();
       inflight = null;

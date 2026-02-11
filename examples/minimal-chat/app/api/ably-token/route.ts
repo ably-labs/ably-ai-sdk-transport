@@ -11,7 +11,7 @@ export async function GET() {
   const token = jwt.sign(
     {
       'x-ably-capability': JSON.stringify({
-        'ait:*': ['publish', 'subscribe', 'history'],
+        'ait:*': ['publish', 'subscribe', 'history', 'presence'],
       }),
     },
     keySecret,

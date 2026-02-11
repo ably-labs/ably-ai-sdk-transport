@@ -35,13 +35,19 @@ function Chat() {
 
   if (!transport) return null;
 
-  return <ChatView transport={transport} />;
+  return <ChatView transport={transport} channelName={channelName} />;
 }
 
-function ChatView({ transport }: { transport: AblyChatTransport }) {
+function ChatView({ transport, channelName }: { transport: AblyChatTransport; channelName: string }) {
   const { messages, sendMessage, setMessages, resumeStream } = useChat({ transport });
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(true);
+  const [agentConnected, setAgentConnected] = useState<boolean | null>(null);
+
+  // Observe agent presence
+  useEffect(() => {
+    return transport.onAgentPresenceChange(setAgentConnected);
+  }, [transport]);
 
   // Load history on mount and when transport changes
   useEffect(() => {
@@ -66,9 +72,34 @@ function ChatView({ transport }: { transport: AblyChatTransport }) {
 
   }, [transport, setMessages, resumeStream]);
 
+  const handleReconnect = () => {
+    fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ channelName }),
+    }).catch((err) => console.error('Failed to reconnect:', err));
+  };
+
   return (
     <main className="chat-container">
       <h1>Minimal Chat</h1>
+
+      <div className="agent-status">
+        {agentConnected === null && (
+          <span className="status-checking">Checking agent...</span>
+        )}
+        {agentConnected === true && (
+          <span className="status-connected">Agent connected</span>
+        )}
+        {agentConnected === false && (
+          <span className="status-disconnected">
+            Agent disconnected
+            <button onClick={handleReconnect} className="reconnect-button">
+              Reconnect
+            </button>
+          </span>
+        )}
+      </div>
 
       {isLoading && (
         <div className="loading-indicator">Loading history...</div>

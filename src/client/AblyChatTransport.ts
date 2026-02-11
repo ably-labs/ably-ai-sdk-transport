@@ -174,6 +174,58 @@ export class AblyChatTransport implements ChatTransport<UIMessage> {
     return this.createDrainStream();
   }
 
+  /**
+   * Observe whether an agent is present on the channel.
+   *
+   * Calls `callback` with `true` when at least one agent is connected,
+   * and `false` when all agents have left. The callback is also invoked
+   * immediately with the current state (seeded from `presence.get()`).
+   *
+   * @returns An unsubscribe function.
+   */
+  onAgentPresenceChange(callback: (isPresent: boolean) => void): () => void {
+    const agentConnections = new Set<string>();
+
+    const onEnter = (msg: Ably.PresenceMessage) => {
+      if (msg.data?.type !== 'agent') return;
+      const wasBefore = agentConnections.size > 0;
+      agentConnections.add(msg.connectionId);
+      const isNow = agentConnections.size > 0;
+      if (isNow !== wasBefore) callback(isNow);
+    };
+
+    const onLeave = (msg: Ably.PresenceMessage) => {
+      if (msg.data?.type !== 'agent') return;
+      const wasBefore = agentConnections.size > 0;
+      agentConnections.delete(msg.connectionId);
+      const isNow = agentConnections.size > 0;
+      if (isNow !== wasBefore) callback(isNow);
+    };
+
+    this.channel.presence.subscribe('enter', onEnter);
+    this.channel.presence.subscribe('leave', onLeave);
+
+    // Seed initial state
+    this.channel.presence.get().then((members) => {
+      for (const m of members) {
+        if (m.data?.type === 'agent') {
+          agentConnections.add(m.connectionId);
+        }
+      }
+      callback(agentConnections.size > 0);
+    });
+
+    return () => {
+      this.channel.presence.unsubscribe('enter', onEnter);
+      this.channel.presence.unsubscribe('leave', onLeave);
+    };
+  }
+
+  /** Expose the raw Ably presence object for advanced use cases (e.g. custom presence data or presence history). */
+  presence() {
+    return this.channel.presence;
+  }
+
   close(): void {
     this.cancelActiveDrain();
     this.buffer.cancel(); // unconditional — covers edge case where drain was already null
