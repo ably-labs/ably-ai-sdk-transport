@@ -1,11 +1,28 @@
-import Ably from 'ably';
-
-const ablyRest = new Ably.Rest({ key: process.env.ABLY_API_KEY });
+import jwt from 'jsonwebtoken';
 
 export async function GET() {
-  const tokenRequest = await ablyRest.auth.createTokenRequest({
-    clientId: 'anonymous',
-    capability: { 'ait:*': ['subscribe', 'publish', 'history'] },
+  const apiKey = process.env.ABLY_API_KEY;
+  if (!apiKey) {
+    return new Response('ABLY_API_KEY not set', { status: 500 });
+  }
+
+  const [keyName, keySecret] = apiKey.split(':');
+
+  const token = jwt.sign(
+    {
+      'x-ably-capability': JSON.stringify({
+        'ait:*': ['publish', 'subscribe', 'history'],
+      }),
+    },
+    keySecret,
+    {
+      algorithm: 'HS256',
+      keyid: keyName,
+      expiresIn: '1h',
+    },
+  );
+
+  return new Response(token, {
+    headers: { 'Content-Type': 'application/jwt' },
   });
-  return Response.json(tokenRequest);
 }

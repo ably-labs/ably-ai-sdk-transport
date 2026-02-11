@@ -27,12 +27,20 @@ describe('AblyChatTransport', () => {
     { id: 'msg-1', role: 'user', parts: [{ type: 'text', text: 'Hello' }] },
   ];
 
+  /** Extract the promptId from the published trigger message. */
+  function getPublishedPromptId(triggerName: string): string {
+    const call = mockChannel.publishCalls.find(
+      (c) => c.message.name === triggerName,
+    );
+    return call!.message.extras?.headers?.promptId;
+  }
+
   it('subscribes to channel at construction', () => {
     expect(mockChannel.listeners.length).toBeGreaterThan(0);
   });
 
   describe('sendMessages', () => {
-    it('publishes chat-message and drains buffer until finish', async () => {
+    it('publishes chat-message with promptId and drains buffer until finish', async () => {
       const streamPromise = transport.sendMessages({
         trigger: 'submit-message',
         chatId: 'chat-123',
@@ -43,42 +51,11 @@ describe('AblyChatTransport', () => {
 
       const stream = await streamPromise;
 
-      // Simulate a complete response
-      await new Promise((r) => setTimeout(r, 10));
-      mockChannel.simulateMessage({
-        name: 'text:t0',
-        action: 'message.create',
-        serial: 'S1',
-      });
-      mockChannel.simulateMessage({
-        name: 'text:t0',
-        action: 'message.append',
-        serial: 'S1',
-        data: 'Hello',
-        version: { serial: 'v1', timestamp: Date.now(), metadata: { event: 'text-delta' } },
-      });
-      mockChannel.simulateMessage({
-        name: 'text:t0',
-        action: 'message.append',
-        serial: 'S1',
-        data: '',
-        version: { serial: 'v2', timestamp: Date.now(), metadata: { event: 'text-end' } },
-      });
-      mockChannel.simulateMessage({
-        name: 'step-finish',
-        action: 'message.create',
-        serial: 'S2',
-      });
-      mockChannel.simulateMessage({
-        name: 'finish',
-        action: 'message.create',
-        serial: 'S3',
-        data: '{"finishReason":"stop"}',
-      });
+      // Extract promptId from the published trigger
+      const promptId = getPublishedPromptId('chat-message');
+      expect(promptId).toBeDefined();
 
-      const chunks = await collectChunks(stream);
-
-      // Verify channel.publish was called with chat-message
+      // Verify the trigger message has both role and promptId
       const chatMessageCall = mockChannel.publishCalls.find(
         (c) => c.message.name === 'chat-message',
       );
@@ -86,8 +63,48 @@ describe('AblyChatTransport', () => {
       const publishData = JSON.parse(chatMessageCall!.message.data);
       expect(publishData.message.id).toBe('msg-1');
       expect(chatMessageCall!.message.extras).toEqual({
-        headers: { role: 'user' },
+        headers: { role: 'user', promptId },
       });
+
+      // Simulate a complete response with matching promptId
+      await new Promise((r) => setTimeout(r, 10));
+      mockChannel.simulateMessage({
+        name: 'text:t0',
+        action: 'message.create',
+        serial: 'S1',
+        extras: { headers: { role: 'assistant', promptId } },
+      });
+      mockChannel.simulateMessage({
+        name: 'text:t0',
+        action: 'message.append',
+        serial: 'S1',
+        data: 'Hello',
+        extras: { headers: { role: 'assistant', promptId } },
+        version: { serial: 'v1', timestamp: Date.now(), metadata: { event: 'text-delta' } },
+      });
+      mockChannel.simulateMessage({
+        name: 'text:t0',
+        action: 'message.append',
+        serial: 'S1',
+        data: '',
+        extras: { headers: { role: 'assistant', promptId } },
+        version: { serial: 'v2', timestamp: Date.now(), metadata: { event: 'text-end' } },
+      });
+      mockChannel.simulateMessage({
+        name: 'step-finish',
+        action: 'message.create',
+        serial: 'S2',
+        extras: { headers: { role: 'assistant', promptId } },
+      });
+      mockChannel.simulateMessage({
+        name: 'finish',
+        action: 'message.create',
+        serial: 'S3',
+        data: '{"finishReason":"stop"}',
+        extras: { headers: { role: 'assistant', promptId } },
+      });
+
+      const chunks = await collectChunks(stream);
 
       // Verify chunk sequence
       const types = chunks.map((c) => c.type);
@@ -102,7 +119,7 @@ describe('AblyChatTransport', () => {
       ]);
     });
 
-    it('publishes regenerate event for regenerate-message trigger', async () => {
+    it('publishes regenerate event with promptId', async () => {
       const streamPromise = transport.sendMessages({
         trigger: 'regenerate-message',
         chatId: 'chat-123',
@@ -112,6 +129,7 @@ describe('AblyChatTransport', () => {
       });
 
       const stream = await streamPromise;
+      const promptId = getPublishedPromptId('regenerate');
 
       // Complete the stream
       await new Promise((r) => setTimeout(r, 10));
@@ -120,6 +138,7 @@ describe('AblyChatTransport', () => {
         action: 'message.create',
         serial: 'S1',
         data: '{"finishReason":"stop"}',
+        extras: { headers: { role: 'assistant', promptId } },
       });
 
       await collectChunks(stream);
@@ -131,7 +150,7 @@ describe('AblyChatTransport', () => {
       const regenData = JSON.parse(regenCall!.message.data);
       expect(regenData.messageId).toBe('msg-to-regen');
       expect(regenCall!.message.extras).toEqual({
-        headers: { role: 'user' },
+        headers: { role: 'user', promptId },
       });
     });
 
@@ -151,6 +170,7 @@ describe('AblyChatTransport', () => {
       });
 
       const stream = await streamPromise;
+      const promptId = getPublishedPromptId('chat-message');
 
       await new Promise((r) => setTimeout(r, 10));
       mockChannel.simulateMessage({
@@ -158,6 +178,7 @@ describe('AblyChatTransport', () => {
         action: 'message.create',
         serial: 'S1',
         data: '{"finishReason":"stop"}',
+        extras: { headers: { role: 'assistant', promptId } },
       });
 
       await collectChunks(stream);
@@ -180,6 +201,7 @@ describe('AblyChatTransport', () => {
       });
 
       const stream = await streamPromise;
+      const promptId = getPublishedPromptId('chat-message');
 
       await new Promise((r) => setTimeout(r, 10));
 
@@ -208,12 +230,14 @@ describe('AblyChatTransport', () => {
         name: 'text:t0',
         action: 'message.create',
         serial: 'S1',
+        extras: { headers: { role: 'assistant', promptId } },
       });
       mockChannel.simulateMessage({
         name: 'text:t0',
         action: 'message.append',
         serial: 'S1',
         data: 'Hi',
+        extras: { headers: { role: 'assistant', promptId } },
         version: { serial: 'v1', timestamp: Date.now(), metadata: { event: 'text-delta' } },
       });
       mockChannel.simulateMessage({
@@ -221,18 +245,21 @@ describe('AblyChatTransport', () => {
         action: 'message.append',
         serial: 'S1',
         data: '',
+        extras: { headers: { role: 'assistant', promptId } },
         version: { serial: 'v2', timestamp: Date.now(), metadata: { event: 'text-end' } },
       });
       mockChannel.simulateMessage({
         name: 'step-finish',
         action: 'message.create',
         serial: 'S2',
+        extras: { headers: { role: 'assistant', promptId } },
       });
       mockChannel.simulateMessage({
         name: 'finish',
         action: 'message.create',
         serial: 'S3',
         data: '{"finishReason":"stop"}',
+        extras: { headers: { role: 'assistant', promptId } },
       });
 
       const chunks = await collectChunks(stream);
@@ -250,77 +277,7 @@ describe('AblyChatTransport', () => {
       ]);
     });
 
-    it('clears buffer before publishing', async () => {
-      // Simulate a stale message already in the buffer (from another device)
-      mockChannel.simulateMessage({
-        name: 'text:stale',
-        action: 'message.create',
-        serial: 'STALE',
-      });
-
-      // Give the subscription time to buffer it
-      await new Promise((r) => setTimeout(r, 10));
-
-      // Now send a message — buffer should be cleared
-      const streamPromise = transport.sendMessages({
-        trigger: 'submit-message',
-        chatId: 'chat-123',
-        messageId: undefined,
-        messages: makeMessages(),
-        abortSignal: undefined,
-      });
-
-      const stream = await streamPromise;
-
-      // Simulate the actual response
-      await new Promise((r) => setTimeout(r, 10));
-      mockChannel.simulateMessage({
-        name: 'text:t0',
-        action: 'message.create',
-        serial: 'S1',
-      });
-      mockChannel.simulateMessage({
-        name: 'text:t0',
-        action: 'message.append',
-        serial: 'S1',
-        data: 'Fresh',
-        version: { serial: 'v1', timestamp: Date.now(), metadata: { event: 'text-delta' } },
-      });
-      mockChannel.simulateMessage({
-        name: 'text:t0',
-        action: 'message.append',
-        serial: 'S1',
-        data: '',
-        version: { serial: 'v2', timestamp: Date.now(), metadata: { event: 'text-end' } },
-      });
-      mockChannel.simulateMessage({
-        name: 'step-finish',
-        action: 'message.create',
-        serial: 'S2',
-      });
-      mockChannel.simulateMessage({
-        name: 'finish',
-        action: 'message.create',
-        serial: 'S3',
-        data: '{"finishReason":"stop"}',
-      });
-
-      const chunks = await collectChunks(stream);
-      const types = chunks.map((c) => c.type);
-
-      // Should NOT include the stale 'text:stale' message
-      expect(types).toEqual([
-        'start',
-        'start-step',
-        'text-start',
-        'text-delta',
-        'text-end',
-        'finish-step',
-        'finish',
-      ]);
-    });
-
-    it('publishes user-abort on abort signal', async () => {
+    it('publishes user-abort with promptId on abort signal', async () => {
       const controller = new AbortController();
 
       const streamPromise = transport.sendMessages({
@@ -332,19 +289,20 @@ describe('AblyChatTransport', () => {
       });
 
       const stream = await streamPromise;
+      const promptId = getPublishedPromptId('chat-message');
       await new Promise((r) => setTimeout(r, 10));
 
       // Abort after getting the stream
       controller.abort();
       await new Promise((r) => setTimeout(r, 10));
 
-      // Verify user-abort was published
+      // Verify user-abort was published with promptId
       const abortCall = mockChannel.publishCalls.find(
         (c) => c.message.name === 'user-abort',
       );
       expect(abortCall).toBeDefined();
       expect(abortCall!.message.extras).toEqual({
-        headers: { role: 'user' },
+        headers: { role: 'user', promptId },
       });
 
       // Complete the stream to avoid hanging
@@ -353,6 +311,7 @@ describe('AblyChatTransport', () => {
         action: 'message.create',
         serial: 'S99',
         data: '{"finishReason":"stop"}',
+        extras: { headers: { role: 'assistant', promptId } },
       });
       await collectChunks(stream);
     });
@@ -383,7 +342,7 @@ describe('AblyChatTransport', () => {
       expect(result).toBeNull();
     });
 
-    it('returns a drain stream that processes buffered messages', async () => {
+    it('returns a drain stream that processes all messages (no promptId filter)', async () => {
       // Signal that an active stream was detected (e.g. via loadChatHistory)
       (transport as any)._hasActiveStream = true;
 
@@ -393,7 +352,7 @@ describe('AblyChatTransport', () => {
 
       expect(stream).not.toBeNull();
 
-      // Simulate messages arriving on the channel
+      // Simulate messages arriving on the channel — no promptId (reconnecting to existing stream)
       await new Promise((r) => setTimeout(r, 10));
       mockChannel.simulateMessage({
         name: 'text:t0',
@@ -437,6 +396,176 @@ describe('AblyChatTransport', () => {
         'finish-step',
         'finish',
       ]);
+    });
+  });
+
+  describe('concurrent sendMessages', () => {
+    it('cancels the first drain and filters stale messages when a second sendMessages is called', async () => {
+      // Send first message
+      const stream1Promise = transport.sendMessages({
+        trigger: 'submit-message',
+        chatId: 'chat-123',
+        messageId: undefined,
+        messages: makeMessages(),
+        abortSignal: undefined,
+      });
+
+      const stream1 = await stream1Promise;
+      const chunks1Promise = collectChunks(stream1);
+      await new Promise((r) => setTimeout(r, 10));
+
+      const promptId1 = getPublishedPromptId('chat-message');
+
+      // Start streaming response 1
+      mockChannel.simulateMessage({
+        name: 'text:t0',
+        action: 'message.create',
+        serial: 'S1',
+        extras: { headers: { role: 'assistant', promptId: promptId1 } },
+      });
+      mockChannel.simulateMessage({
+        name: 'text:t0',
+        action: 'message.append',
+        serial: 'S1',
+        data: 'Hello from response 1',
+        extras: { headers: { role: 'assistant', promptId: promptId1 } },
+        version: { serial: 'v1', timestamp: Date.now(), metadata: { event: 'text-delta' } },
+      });
+
+      // Let the drain loop process the buffered messages so emitState is updated
+      await new Promise((r) => setTimeout(r, 10));
+
+      // Now send a second message before response 1 finishes
+      const messages2: UIMessage[] = [
+        { id: 'msg-2', role: 'user', parts: [{ type: 'text', text: 'Second question' }] },
+      ];
+      const stream2Promise = transport.sendMessages({
+        trigger: 'submit-message',
+        chatId: 'chat-123',
+        messageId: undefined,
+        messages: messages2,
+        abortSignal: undefined,
+      });
+
+      const stream2 = await stream2Promise;
+      const chunks2Promise = collectChunks(stream2);
+      await new Promise((r) => setTimeout(r, 10));
+
+      // Stream 1 should have been gracefully finalized (not aborted)
+      const chunks1 = await chunks1Promise;
+      const types1 = chunks1.map((c) => c.type);
+      expect(types1).not.toContain('abort');
+      expect(types1).toContain('finish-step');
+      expect(types1).toContain('finish');
+      const finishChunk = chunks1.find((c) => c.type === 'finish');
+      expect((finishChunk as any).finishReason).toBe('other');
+
+      // Get promptId2
+      const chatCalls = mockChannel.publishCalls.filter(
+        (c) => c.message.name === 'chat-message',
+      );
+      const promptId2 = chatCalls[chatCalls.length - 1].message.extras?.headers?.promptId;
+      expect(promptId2).toBeDefined();
+      expect(promptId2).not.toBe(promptId1);
+
+      // Simulate stale messages from response 1 (should be filtered)
+      mockChannel.simulateMessage({
+        name: 'text:t0',
+        action: 'message.append',
+        serial: 'S1',
+        data: 'more from response 1',
+        extras: { headers: { role: 'assistant', promptId: promptId1 } },
+        version: { serial: 'v3', timestamp: Date.now(), metadata: { event: 'text-delta' } },
+      });
+      mockChannel.simulateMessage({
+        name: 'finish',
+        action: 'message.create',
+        serial: 'S5',
+        data: '{"finishReason":"stop"}',
+        extras: { headers: { role: 'assistant', promptId: promptId1 } },
+      });
+
+      // Simulate response 2
+      mockChannel.simulateMessage({
+        name: 'text:t1',
+        action: 'message.create',
+        serial: 'S10',
+        extras: { headers: { role: 'assistant', promptId: promptId2 } },
+      });
+      mockChannel.simulateMessage({
+        name: 'text:t1',
+        action: 'message.append',
+        serial: 'S10',
+        data: 'Hello from response 2',
+        extras: { headers: { role: 'assistant', promptId: promptId2 } },
+        version: { serial: 'v1', timestamp: Date.now(), metadata: { event: 'text-delta' } },
+      });
+      mockChannel.simulateMessage({
+        name: 'text:t1',
+        action: 'message.append',
+        serial: 'S10',
+        data: '',
+        extras: { headers: { role: 'assistant', promptId: promptId2 } },
+        version: { serial: 'v2', timestamp: Date.now(), metadata: { event: 'text-end' } },
+      });
+      mockChannel.simulateMessage({
+        name: 'step-finish',
+        action: 'message.create',
+        serial: 'S11',
+        extras: { headers: { role: 'assistant', promptId: promptId2 } },
+      });
+      mockChannel.simulateMessage({
+        name: 'finish',
+        action: 'message.create',
+        serial: 'S12',
+        data: '{"finishReason":"stop"}',
+        extras: { headers: { role: 'assistant', promptId: promptId2 } },
+      });
+
+      const chunks2 = await chunks2Promise;
+      const types2 = chunks2.map((c) => c.type);
+
+      // Stream 2 should have a clean response — no bleed from response 1
+      expect(types2).toEqual([
+        'start',
+        'start-step',
+        'text-start',
+        'text-delta',
+        'text-end',
+        'finish-step',
+        'finish',
+      ]);
+
+      // Verify the text content is only from response 2
+      const textDelta = chunks2.find((c) => c.type === 'text-delta');
+      expect((textDelta as any).delta).toBe('Hello from response 2');
+    });
+  });
+
+  describe('close', () => {
+    it('cancels active stream and unsubscribes', async () => {
+      // Start a stream
+      const stream = await transport.sendMessages({
+        trigger: 'submit-message',
+        chatId: 'chat-123',
+        messageId: undefined,
+        messages: makeMessages(),
+        abortSignal: undefined,
+      });
+
+      const chunksPromise = collectChunks(stream);
+      await new Promise((r) => setTimeout(r, 10));
+
+      // Close the transport
+      transport.close();
+
+      // Stream should end
+      const chunks = await chunksPromise;
+      // May have some chunks or none, but should not hang
+      expect(Array.isArray(chunks)).toBe(true);
+
+      // Listener should be cleared
+      expect(mockChannel.listeners).toHaveLength(0);
     });
   });
 });

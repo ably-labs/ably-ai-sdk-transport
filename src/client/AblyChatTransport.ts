@@ -52,10 +52,6 @@ class MessageBuffer {
     return this.queue.length === 0;
   }
 
-  clear(): void {
-    this.queue.length = 0;
-  }
-
   cancel(): void {
     if (this.resolver) {
       this.resolver(null);
@@ -66,20 +62,23 @@ class MessageBuffer {
 
 export class AblyChatTransport implements ChatTransport<UIMessage> {
   private readonly channel: Ably.RealtimeChannel;
-  private readonly buffer: MessageBuffer;
+  private readonly buffer = new MessageBuffer();
   private readonly historyLimit: number;
   private readonly attached: Promise<unknown>;
+  private readonly listener: (msg: Ably.InboundMessage) => void;
   private _hasActiveStream = false;
+  private activeDrainCtx: HandlerContext | null = null;
 
   constructor(options: AblyChatTransportOptions) {
     this.historyLimit = options.historyLimit ?? 100;
-    this.buffer = new MessageBuffer();
     this.channel = options.ably.channels.get(options.channelName);
-    // subscribe() returns a promise that resolves once the channel is attached
-    this.attached = this.channel.subscribe((msg: Ably.InboundMessage) => {
+    this.listener = (msg: Ably.InboundMessage) => {
       if (msg.name && CLIENT_MESSAGE_NAMES.has(msg.name)) return;
+      console.log('client received message', JSON.stringify(msg));
       this.buffer.push(msg);
-    });
+    };
+    // subscribe() returns a promise that resolves once the channel is attached
+    this.attached = this.channel.subscribe(this.listener);
   }
 
   /**
@@ -89,14 +88,23 @@ export class AblyChatTransport implements ChatTransport<UIMessage> {
    */
   async loadChatHistory(options?: { limit?: number }): Promise<LoadChatHistoryResult> {
     const limit = options?.limit ?? this.historyLimit;
+    const empty: LoadChatHistoryResult = { messages: [], hasActiveStream: false };
 
     await this.attached;
-    const history = await this.channel.history({ untilAttach: true, limit });
-    const items = history.items;
+
+    let items: Ably.InboundMessage[];
+    try {
+      const history = await this.channel.history({ untilAttach: true, limit });
+      items = history.items;
+    } catch {
+      // Ably throws when the channel has no history (empty response body).
+      this._hasActiveStream = false;
+      return empty;
+    }
 
     if (items.length === 0) {
       this._hasActiveStream = false;
-      return { messages: [], hasActiveStream: false };
+      return empty;
     }
 
     // Check if stream is active: newest message is not terminal
@@ -107,6 +115,7 @@ export class AblyChatTransport implements ChatTransport<UIMessage> {
 
     // Sort chronologically by serial (history returns newest-first)
     const chronological = [...items].sort((a, b) => ((a.serial ?? '') > (b.serial ?? '') ? 1 : -1));
+    console.log('loaded history', chronological)
 
     // Reconstruct UIMessage[]
     const messages = reconstructMessages(chronological);
@@ -124,10 +133,9 @@ export class AblyChatTransport implements ChatTransport<UIMessage> {
     } & ChatRequestOptions,
   ): Promise<ReadableStream<UIMessageChunk>> {
     const { trigger, messageId, messages, abortSignal } = options;
-    const extras = { headers: { role: 'user' } };
+    const promptId = crypto.randomUUID();
 
-    // Clear stale messages from other devices/previous exchanges.
-    this.buffer.clear();
+    const extras = { headers: { role: 'user', promptId } };
 
     // Publish the trigger message
     if (trigger === 'submit-message') {
@@ -149,7 +157,7 @@ export class AblyChatTransport implements ChatTransport<UIMessage> {
     }
 
     // Return a stream that drains the buffer until 'finish'
-    return this.createDrainStream(abortSignal);
+    return this.createDrainStream(abortSignal, promptId);
   }
 
   async reconnectToStream(
@@ -163,17 +171,33 @@ export class AblyChatTransport implements ChatTransport<UIMessage> {
   }
 
   close(): void {
+    this.activeDrainCtx = null;
     this.buffer.cancel();
-    this.channel.unsubscribe();
-    this.channel.detach();
+    this.channel.unsubscribe(this.listener);
   }
 
   private createDrainStream(
     abortSignal?: AbortSignal,
+    promptId?: string,
   ): ReadableStream<UIMessageChunk> {
     const channel = this.channel;
-    const buffer = this.buffer;
-    const extras = { headers: { role: 'user' } };
+
+    // Cancel any previous active drain — use finish (not abort) to avoid
+    // corrupting the AI SDK's internal response-tracking state.
+    if (this.activeDrainCtx && !this.activeDrainCtx.closed) {
+      const prev = this.activeDrainCtx;
+      prev.closed = true;
+      this.buffer.cancel(); // Unblock old drain's pending pull()
+      try {
+        if (prev.emitState.hasEmittedStepStart) {
+          prev.controller.enqueue({ type: 'finish-step' });
+        }
+        if (prev.emitState.hasEmittedStart) {
+          prev.controller.enqueue({ type: 'finish', finishReason: 'other' });
+        }
+        prev.controller.close();
+      } catch { /* already closed */ }
+    }
 
     const serialState = new Map<string, SerialTracker>();
     const emitState = { hasEmittedStart: false, hasEmittedStepStart: false };
@@ -183,19 +207,36 @@ export class AblyChatTransport implements ChatTransport<UIMessage> {
         const ensureStarted = createEnsureStarted(controller, emitState);
         const ctx: HandlerContext = { controller, serialState, ensureStarted, emitState, closed: false };
 
+        // Track this drain as the active one
+        this.activeDrainCtx = ctx;
+
         abortSignal?.addEventListener('abort', () => {
           if (ctx.closed) return;
           channel.publish({
             name: 'user-abort',
-            extras,
+            extras: { headers: { role: 'user', ...(promptId ? { promptId } : {}) } },
           });
         });
 
         // Async drain loop
         const drain = async () => {
           while (!ctx.closed) {
-            const msg = await buffer.pull();
-            if (msg === null) break; // cancelled
+            const msg = await this.buffer.pull();
+            if (msg === null) {
+              // Buffer was cancelled (e.g. transport.close())
+              if (!ctx.closed) {
+                ctx.closed = true;
+                try { controller.close(); } catch { /* already closed */ }
+              }
+              break;
+            }
+
+            // Filter by promptId: skip messages from a different prompt
+            const msgPromptId = msg.extras?.headers?.promptId;
+            if (promptId && msgPromptId && msgPromptId !== promptId) {
+              continue;
+            }
+
             try {
               this.routeMessage(msg, ctx);
             } catch (err) {
@@ -214,7 +255,7 @@ export class AblyChatTransport implements ChatTransport<UIMessage> {
       },
 
       cancel: () => {
-        buffer.cancel(); // unblock pending pull
+        this.buffer.cancel(); // unblock pending pull
       },
     });
   }

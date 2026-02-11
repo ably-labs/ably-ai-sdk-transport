@@ -471,6 +471,264 @@ describe('publishToAbly', () => {
     });
   });
 
+  describe('abort signal handling', () => {
+    it('cancels blocked reader and publishes single abort on signal abort', async () => {
+      const controller = new AbortController();
+
+      // Stream that blocks on pull — simulates waiting for model output
+      const stream = new ReadableStream<UIMessageChunk>({
+        start(streamController) {
+          streamController.enqueue({ type: 'start' });
+          streamController.enqueue({ type: 'start-step' });
+        },
+        pull() {
+          // Never resolves — reader.cancel() from abort listener unblocks it
+          return new Promise<void>(() => {});
+        },
+      });
+
+      // Abort after a short delay
+      setTimeout(() => controller.abort(), 20);
+
+      await publishToAbly({ channel, stream, abortSignal: controller.signal });
+
+      const abortCalls = channel.publishCalls.filter(
+        (c) => c.message.name === 'abort',
+      );
+      expect(abortCalls).toHaveLength(1);
+    });
+
+    it('does not double-publish abort when stream emits abort chunk', async () => {
+      const controller = new AbortController();
+
+      // Stream emits its own abort chunk, then signal also fires
+      const stream = createChunkStream([
+        { type: 'start' },
+        { type: 'start-step' },
+        { type: 'abort' },
+      ]);
+
+      // Abort the signal before calling publishToAbly
+      controller.abort();
+
+      await publishToAbly({ channel, stream, abortSignal: controller.signal });
+
+      const abortCalls = channel.publishCalls.filter(
+        (c) => c.message.name === 'abort',
+      );
+      expect(abortCalls).toHaveLength(1);
+    });
+
+    it('does not publish abort after finish when signal fires late', async () => {
+      const controller = new AbortController();
+
+      const stream = createChunkStream([
+        { type: 'start' },
+        { type: 'start-step' },
+        { type: 'finish-step' },
+        { type: 'finish', finishReason: 'stop' },
+      ]);
+
+      await publishToAbly({ channel, stream, abortSignal: controller.signal });
+
+      // Signal fires after natural completion
+      controller.abort();
+
+      const abortCalls = channel.publishCalls.filter(
+        (c) => c.message.name === 'abort',
+      );
+      expect(abortCalls).toHaveLength(0);
+
+      const finishCalls = channel.publishCalls.filter(
+        (c) => c.message.name === 'finish',
+      );
+      expect(finishCalls).toHaveLength(1);
+    });
+
+    it('does not publish abort after error chunk when signal fires late', async () => {
+      const controller = new AbortController();
+
+      const stream = createChunkStream([
+        { type: 'start' },
+        { type: 'start-step' },
+        { type: 'error', errorText: 'model error' },
+      ]);
+
+      await publishToAbly({ channel, stream, abortSignal: controller.signal });
+
+      // Signal fires after error terminal
+      controller.abort();
+
+      const abortCalls = channel.publishCalls.filter(
+        (c) => c.message.name === 'abort',
+      );
+      expect(abortCalls).toHaveLength(0);
+
+      const errorCalls = channel.publishCalls.filter(
+        (c) => c.message.name === 'error',
+      );
+      expect(errorCalls).toHaveLength(1);
+    });
+
+    it('publishes abort when signal is already aborted at call time', async () => {
+      const controller = new AbortController();
+      controller.abort();
+
+      // Stream with no terminal — abort listener cancels the reader immediately
+      const stream = new ReadableStream<UIMessageChunk>({
+        start(streamController) {
+          streamController.enqueue({ type: 'start' });
+        },
+        pull() {
+          return new Promise<void>(() => {});
+        },
+      });
+
+      await publishToAbly({ channel, stream, abortSignal: controller.signal });
+
+      const abortCalls = channel.publishCalls.filter(
+        (c) => c.message.name === 'abort',
+      );
+      expect(abortCalls).toHaveLength(1);
+    });
+  });
+
+  describe('promptId', () => {
+    it('includes promptId in extras of all published messages', async () => {
+      const stream = createChunkStream([
+        { type: 'start' },
+        { type: 'start-step' },
+        { type: 'text-start', id: 'text-0' },
+        { type: 'text-delta', id: 'text-0', delta: 'Hello' },
+        { type: 'text-end', id: 'text-0' },
+        { type: 'finish-step' },
+        { type: 'finish', finishReason: 'stop' },
+      ]);
+
+      await publishToAbly({ channel, stream, promptId: 'prompt-123' });
+
+      // All publish calls should have promptId in extras
+      for (const call of channel.publishCalls) {
+        expect(call.message.extras?.headers?.promptId).toBe('prompt-123');
+        expect(call.message.extras?.headers?.role).toBe('assistant');
+      }
+
+      // All append calls should have promptId in extras
+      for (const call of channel.appendCalls) {
+        expect(call.message.extras?.headers?.promptId).toBe('prompt-123');
+        expect(call.message.extras?.headers?.role).toBe('assistant');
+      }
+    });
+
+    it('includes promptId in extras of updateMessage calls', async () => {
+      const stream = createChunkStream([
+        { type: 'start' },
+        { type: 'start-step' },
+        { type: 'tool-input-start', toolCallId: 'call-1', toolName: 'search' },
+        {
+          type: 'tool-input-available',
+          toolCallId: 'call-1',
+          toolName: 'search',
+          input: { q: 'test' },
+        },
+        {
+          type: 'tool-output-available',
+          toolCallId: 'call-1',
+          output: { results: [] },
+        },
+        { type: 'finish-step' },
+        { type: 'finish', finishReason: 'stop' },
+      ]);
+
+      await publishToAbly({ channel, stream, promptId: 'prompt-456' });
+
+      for (const call of channel.updateCalls) {
+        expect(call.message.extras?.headers?.promptId).toBe('prompt-456');
+        expect(call.message.extras?.headers?.role).toBe('assistant');
+      }
+    });
+
+    it('includes promptId on abort terminal published after signal abort', async () => {
+      const controller = new AbortController();
+
+      const stream = new ReadableStream<UIMessageChunk>({
+        start(streamController) {
+          streamController.enqueue({ type: 'start' });
+        },
+        pull() {
+          return new Promise<void>(() => {});
+        },
+      });
+
+      setTimeout(() => controller.abort(), 20);
+
+      await publishToAbly({ channel, stream, abortSignal: controller.signal, promptId: 'prompt-789' });
+
+      const abortCall = channel.publishCalls.find(
+        (c) => c.message.name === 'abort',
+      );
+      expect(abortCall).toBeDefined();
+      expect(abortCall!.message.extras?.headers?.promptId).toBe('prompt-789');
+    });
+
+    it('does not include promptId when not provided', async () => {
+      const stream = createChunkStream([
+        { type: 'start' },
+        { type: 'start-step' },
+        { type: 'finish-step' },
+        { type: 'finish', finishReason: 'stop' },
+      ]);
+
+      await publishToAbly({ channel, stream });
+
+      for (const call of channel.publishCalls) {
+        expect(call.message.extras?.headers?.promptId).toBeUndefined();
+        expect(call.message.extras?.headers?.role).toBe('assistant');
+      }
+    });
+
+    it('includes promptId in non-streaming tool call extras', async () => {
+      const stream = createChunkStream([
+        { type: 'start' },
+        { type: 'start-step' },
+        {
+          type: 'tool-input-available',
+          toolCallId: 'call-2',
+          toolName: 'getTime',
+          input: { tz: 'UTC' },
+        },
+        { type: 'finish-step' },
+        { type: 'finish', finishReason: 'stop' },
+      ]);
+
+      await publishToAbly({ channel, stream, promptId: 'prompt-tool' });
+
+      const toolCall = channel.publishCalls.find(
+        (c) => c.message.name === 'tool:call-2:getTime',
+      );
+      expect(toolCall).toBeDefined();
+      expect(toolCall!.message.extras?.headers?.promptId).toBe('prompt-tool');
+      expect(toolCall!.message.extras?.headers?.event).toBe('tool-input-available');
+    });
+
+    it('includes promptId in transient data-* chunk extras', async () => {
+      const stream = createChunkStream([
+        { type: 'data-progress', data: { percent: 50 }, id: 'p1', transient: true } as any,
+      ]);
+
+      await publishToAbly({ channel, stream, promptId: 'prompt-data' });
+
+      const dataCall = channel.publishCalls.find(
+        (c) => c.message.name === 'data-progress',
+      );
+      expect(dataCall).toBeDefined();
+      expect(dataCall!.message.extras).toEqual({
+        ephemeral: true,
+        headers: { role: 'assistant', promptId: 'prompt-data' },
+      });
+    });
+  });
+
   describe('error handling', () => {
     it('publishes error to channel on stream read error', async () => {
       const errorStream = new ReadableStream<UIMessageChunk>({

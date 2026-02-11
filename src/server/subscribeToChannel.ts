@@ -1,5 +1,6 @@
 import type * as Ably from 'ably';
 import type { UIMessage, UIMessageChunk } from 'ai';
+import { readUIMessageStream } from 'ai';
 import { reconstructMessages } from '../shared';
 import { publishToAbly } from './publishToAbly';
 
@@ -22,39 +23,47 @@ export async function subscribeToChannel(options: SubscribeToChannelOptions): Pr
   /** Single conversation state for this channel. */
   const messages: UIMessage[] = [...initialMessages];
 
-  /** In-flight generation abort controller. */
-  let inflight: AbortController | null = null;
+  /** In-flight generation: abort controller + publish promise. */
+  let inflight: { controller: AbortController; done: Promise<void> } | null = null;
 
   const handleChatMessage = async (message: Ably.InboundMessage) => {
     const { message: userMessage } = JSON.parse(message.data as string) as {
       message: UIMessage;
     };
+    messages.push(userMessage);
 
-    // Dedup by message ID
-    if (!messages.some((m) => m.id === userMessage.id)) {
-      messages.push(userMessage);
+    if (inflight) {
+      inflight.controller.abort();
+      await inflight.done.catch(() => {});
     }
 
-    // Abort any in-flight generation
-    inflight?.abort();
-
+    const promptId = message.extras?.headers?.promptId as string | undefined;
     const abortController = new AbortController();
-    inflight = abortController;
 
-    try {
+    const publishPromise = (async () => {
       const stream = await handler({
         messages: [...messages],
         trigger: 'submit-message',
         abortSignal: abortController.signal,
       });
 
-      await publishToAbly({
+      const chunks = await publishToAbly({
         channel,
         stream,
         abortSignal: abortController.signal,
+        promptId,
       });
+
+      const assistantMessages = await accumulateMessages(chunks);
+      messages.push(...assistantMessages.filter((m) => m.parts.length > 0));
+    })();
+
+    inflight = { controller: abortController, done: publishPromise };
+
+    try {
+      await publishPromise;
     } finally {
-      if (inflight === abortController) {
+      if (inflight?.done === publishPromise) {
         inflight = null;
       }
     }
@@ -81,36 +90,47 @@ export async function subscribeToChannel(options: SubscribeToChannelOptions): Pr
       }
     }
 
-    // Abort any in-flight generation
-    inflight?.abort();
+    // Abort and await any in-flight generation
+    if (inflight) {
+      inflight.controller.abort();
+      await inflight.done.catch(() => {});
+    }
 
+    const promptId = message.extras?.headers?.promptId as string | undefined;
     const abortController = new AbortController();
-    inflight = abortController;
 
-    try {
+    const publishPromise = (async () => {
       const stream = await handler({
         messages: [...messages],
         trigger: 'regenerate-message',
         abortSignal: abortController.signal,
       });
 
-      await publishToAbly({
+      const chunks = await publishToAbly({
         channel,
         stream,
         abortSignal: abortController.signal,
+        promptId,
       });
+
+      const assistantMessages = await accumulateMessages(chunks);
+      messages.push(...assistantMessages.filter((m) => m.parts.length > 0));
+    })();
+
+    inflight = { controller: abortController, done: publishPromise };
+
+    try {
+      await publishPromise;
     } finally {
-      if (inflight === abortController) {
+      if (inflight?.done === publishPromise) {
         inflight = null;
       }
     }
   };
 
   const handleAbort = () => {
-    if (inflight) {
-      inflight.abort();
-      inflight = null;
-    }
+    console.log('Abort signal received from client');
+    inflight?.controller.abort();
   };
 
   // Subscribe to client events — filter by role header to skip our own echoes.
@@ -119,6 +139,11 @@ export async function subscribeToChannel(options: SubscribeToChannelOptions): Pr
     // Only process client-published messages (role: "user")
     const role = message.extras?.headers?.role;
     if (role !== 'user') return;
+    console.log('Prompt received from client:', JSON.stringify(message));
+    console.log('Current conversation state messages before processing this prompt:');
+    for (const msg of messages) {
+      console.log('    - ', JSON.stringify(msg));
+    }
 
     switch (message.name) {
       case 'chat-message':
@@ -136,24 +161,50 @@ export async function subscribeToChannel(options: SubscribeToChannelOptions): Pr
         break;
     }
   }).then(async () => {
-    // Channel is now attached — seed conversation from history
-    const result = await channel.history({ untilAttach: true, limit: historyLimit });
+    // Channel is now attached — seed conversation from history.
+    // Ably throws when the channel has no history (empty response body),
+    // so we catch and treat it as an empty result.
+    let items: Ably.InboundMessage[];
+    try {
+      const result = await channel.history({ untilAttach: true, limit: historyLimit });
+      items = result.items;
+    } catch {
+      return; // No history to seed
+    }
+    if (items.length === 0) return;
+
     // History returns newest-first; reverse to chronological
-    const chronological = [...result.items].reverse();
+    const chronological = [...items].reverse();
     const seeded = reconstructMessages(chronological);
+
     // Dedup against initialMessages
     const existingIds = new Set(messages.map((m) => m.id));
     messages.push(...seeded.filter((m) => !existingIds.has(m.id)));
-  }).catch((err) => {
-    console.error('Error seeding conversation from history:', err);
   });
 
   // Return cleanup function
   return () => {
     channel.unsubscribe();
     if (inflight) {
-      inflight.abort();
+      inflight.controller.abort();
       inflight = null;
     }
   };
 }
+
+/** Replay collected chunks through readUIMessageStream to build UIMessages. */
+async function accumulateMessages(chunks: UIMessageChunk[]): Promise<UIMessage[]> {
+  const stream = new ReadableStream<UIMessageChunk>({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(chunk);
+      controller.close();
+    },
+  });
+
+  const messages: UIMessage[] = []
+  for await (const msg of readUIMessageStream({ stream })) {
+      messages.push(msg);
+  }
+  return messages
+}
+

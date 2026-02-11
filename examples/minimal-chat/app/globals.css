@@ -1,0 +1,32 @@
+.chat-container {
+  max-width: 600px;
+  margin: 0 auto;
+  padding: 2rem;
+}
+
+.chat-messages {
+  margin-bottom: 1rem;
+}
+
+.chat-message {
+  margin-bottom: 0.5rem;
+}
+
+.chat-form {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.chat-input {
+  flex: 1;
+  padding: 0.5rem;
+}
+
+.chat-button {
+  padding: 0.5rem 1rem;
+}
+
+.loading-indicator {
+  margin-bottom: 1rem;
+  color: #888;
+}

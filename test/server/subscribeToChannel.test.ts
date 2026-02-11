@@ -93,9 +93,11 @@ describe('subscribeToChannel', () => {
 
     expect(handler).toHaveBeenCalledTimes(2);
     const secondCallArgs = handler.mock.calls[1][0];
-    expect(secondCallArgs.messages).toHaveLength(2);
+    // [user1, assistant1, user2] — assistant response is now accumulated
+    expect(secondCallArgs.messages).toHaveLength(3);
     expect(secondCallArgs.messages[0].id).toBe('msg-1');
-    expect(secondCallArgs.messages[1].id).toBe('msg-2');
+    expect(secondCallArgs.messages[1].role).toBe('assistant');
+    expect(secondCallArgs.messages[2].id).toBe('msg-2');
   });
 
   it('deduplicates messages with the same ID', async () => {
@@ -128,9 +130,11 @@ describe('subscribeToChannel', () => {
 
     await new Promise((r) => setTimeout(r, 50));
 
-    // Second call should still have only 1 message (deduped)
+    // Second call should have user + assistant from first call (user deduped)
     const secondCallArgs = handler.mock.calls[1][0];
-    expect(secondCallArgs.messages).toHaveLength(1);
+    expect(secondCallArgs.messages).toHaveLength(2);
+    expect(secondCallArgs.messages[0].id).toBe('msg-1');
+    expect(secondCallArgs.messages[1].role).toBe('assistant');
   });
 
   it('handles regenerate by truncating messages', async () => {
@@ -352,6 +356,134 @@ describe('subscribeToChannel', () => {
     expect(callArgs.messages).toHaveLength(2);
     expect(callArgs.messages[0].id).toBe('hist-1');
     expect(callArgs.messages[1].id).toBe('msg-1');
+  });
+
+  it('serializes rapid messages: awaits old publish before starting new', async () => {
+    let callCount = 0;
+    const resolvers: Array<(stream: ReadableStream<UIMessageChunk>) => void> = [];
+
+    const handler = vi.fn().mockImplementation(() => {
+      callCount++;
+      return new Promise<ReadableStream<UIMessageChunk>>((resolve) => {
+        resolvers.push(resolve);
+      });
+    });
+
+    subscribeToChannel({ channel, handler });
+
+    // Send first message
+    channel.simulateMessage({
+      name: 'chat-message',
+      action: 'message.create',
+      serial: 'S1',
+      data: JSON.stringify({ message: makeUserMessage('msg-1', 'First') }),
+      extras: { headers: { role: 'user' } },
+    });
+
+    await new Promise((r) => setTimeout(r, 20));
+    expect(callCount).toBe(1);
+
+    // Send second message while first is still in-flight
+    channel.simulateMessage({
+      name: 'chat-message',
+      action: 'message.create',
+      serial: 'S2',
+      data: JSON.stringify({ message: makeUserMessage('msg-2', 'Second') }),
+      extras: { headers: { role: 'user' } },
+    });
+
+    await new Promise((r) => setTimeout(r, 20));
+
+    // First handler's abort signal should be aborted
+    const firstSignal = handler.mock.calls[0][0].abortSignal as AbortSignal;
+    expect(firstSignal.aborted).toBe(true);
+
+    // Resolve first handler — second should proceed after it
+    resolvers[0](makeAssistantStream('First response'));
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Second handler should have been called now
+    expect(callCount).toBe(2);
+
+    // Resolve second
+    resolvers[1](makeAssistantStream('Second response'));
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Both handlers were called with correct messages
+    // First handler was aborted before producing a stream, so no assistant message accumulated
+    expect(handler.mock.calls[0][0].messages).toHaveLength(1);
+    expect(handler.mock.calls[1][0].messages).toHaveLength(2);
+  });
+
+  it('passes promptId from trigger message to published response messages', async () => {
+    const handler = vi.fn().mockResolvedValue(makeAssistantStream('Hi'));
+
+    subscribeToChannel({ channel, handler });
+
+    const userMsg = makeUserMessage('msg-1', 'Hello');
+    channel.simulateMessage({
+      name: 'chat-message',
+      action: 'message.create',
+      serial: 'S1',
+      data: JSON.stringify({ message: userMsg }),
+      extras: { headers: { role: 'user', promptId: 'prompt-abc' } },
+    });
+
+    // Wait for async handler + publish
+    await new Promise((r) => setTimeout(r, 100));
+
+    // All assistant-published messages should carry the promptId
+    const assistantPublishes = channel.publishCalls.filter(
+      (c) => c.message.extras?.headers?.role === 'assistant',
+    );
+    expect(assistantPublishes.length).toBeGreaterThan(0);
+    for (const call of assistantPublishes) {
+      expect(call.message.extras?.headers?.promptId).toBe('prompt-abc');
+    }
+  });
+
+  it('passes promptId from regenerate trigger to published response messages', async () => {
+    const handler = vi.fn().mockImplementation(() =>
+      Promise.resolve(makeAssistantStream('Regenerated')),
+    );
+
+    subscribeToChannel({ channel, handler });
+
+    // First send a chat message to establish conversation
+    channel.simulateMessage({
+      name: 'chat-message',
+      action: 'message.create',
+      serial: 'S1',
+      data: JSON.stringify({ message: makeUserMessage('msg-1', 'Hello') }),
+      extras: { headers: { role: 'user', promptId: 'prompt-first' } },
+    });
+
+    await new Promise((r) => setTimeout(r, 100));
+
+    // Record the number of publish calls before regenerate
+    const callsBefore = channel.publishCalls.length;
+
+    // Now send regenerate with a different promptId
+    channel.simulateMessage({
+      name: 'regenerate',
+      action: 'message.create',
+      serial: 'S2',
+      data: JSON.stringify({}),
+      extras: { headers: { role: 'user', promptId: 'prompt-regen' } },
+    });
+
+    await new Promise((r) => setTimeout(r, 200));
+
+    // Check only the publish calls made after the regenerate
+    const newCalls = channel.publishCalls.slice(callsBefore);
+    const regenPublishes = newCalls.filter(
+      (c) => c.message.extras?.headers?.promptId === 'prompt-regen',
+    );
+    // Should have at least some messages with the regenerate's promptId
+    expect(regenPublishes.length).toBeGreaterThan(0);
+    for (const call of regenPublishes) {
+      expect(call.message.extras?.headers?.role).toBe('assistant');
+    }
   });
 
   it('seeds conversation from channel history on attach', async () => {
