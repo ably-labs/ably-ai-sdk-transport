@@ -400,9 +400,9 @@ describe('AblyChatTransport', () => {
   });
 
   describe('concurrent sendMessages', () => {
-    it('cancels the first drain and filters stale messages when a second sendMessages is called', async () => {
-      // Send first message
-      const stream1Promise = transport.sendMessages({
+    it('cancels old drain synchronously and closes the stream', async () => {
+      // Start first stream and get some data flowing
+      const stream1 = await transport.sendMessages({
         trigger: 'submit-message',
         chatId: 'chat-123',
         messageId: undefined,
@@ -410,7 +410,67 @@ describe('AblyChatTransport', () => {
         abortSignal: undefined,
       });
 
-      const stream1 = await stream1Promise;
+      const chunks1Promise = collectChunks(stream1);
+      await new Promise((r) => setTimeout(r, 10));
+
+      const promptId1 = getPublishedPromptId('chat-message');
+
+      // Simulate partial response
+      mockChannel.simulateMessage({
+        name: 'text:t0',
+        action: 'message.create',
+        serial: 'S1',
+        extras: { headers: { role: 'assistant', promptId: promptId1 } },
+      });
+
+      // Let the drain process
+      await new Promise((r) => setTimeout(r, 10));
+
+      // Call sendMessages again — this synchronously cancels drain1 then publishes
+      const stream2 = await transport.sendMessages({
+        trigger: 'submit-message',
+        chatId: 'chat-123',
+        messageId: undefined,
+        messages: [{ id: 'msg-2', role: 'user', parts: [{ type: 'text', text: 'Follow up' }] }],
+        abortSignal: undefined,
+      });
+
+      // Stream1 should be closed (cancelActiveDrain closes the controller)
+      const chunks1 = await chunks1Promise;
+      const types1 = chunks1.map((c) => c.type);
+      // Should have partial data but no finish (stream was cancelled, not completed)
+      expect(types1).toContain('start');
+      expect(types1).toContain('text-start');
+      expect(types1).not.toContain('finish');
+
+      // Complete stream2
+      const promptId2 = mockChannel.publishCalls.filter(
+        (c) => c.message.name === 'chat-message',
+      ).pop()!.message.extras?.headers?.promptId;
+      expect(promptId2).toBeDefined();
+      expect(promptId2).not.toBe(promptId1);
+
+      await new Promise((r) => setTimeout(r, 10));
+      mockChannel.simulateMessage({
+        name: 'finish',
+        action: 'message.create',
+        serial: 'S99',
+        data: '{"finishReason":"stop"}',
+        extras: { headers: { role: 'assistant', promptId: promptId2 } },
+      });
+      await collectChunks(stream2);
+    });
+
+    it('filters stale messages from previous prompt when a second sendMessages is called', async () => {
+      // Send first message
+      const stream1 = await transport.sendMessages({
+        trigger: 'submit-message',
+        chatId: 'chat-123',
+        messageId: undefined,
+        messages: makeMessages(),
+        abortSignal: undefined,
+      });
+
       const chunks1Promise = collectChunks(stream1);
       await new Promise((r) => setTimeout(r, 10));
 
@@ -432,14 +492,14 @@ describe('AblyChatTransport', () => {
         version: { serial: 'v1', timestamp: Date.now(), metadata: { event: 'text-delta' } },
       });
 
-      // Let the drain loop process the buffered messages so emitState is updated
+      // Let the drain loop process
       await new Promise((r) => setTimeout(r, 10));
 
-      // Now send a second message before response 1 finishes
+      // Send a second message before response 1 finishes
       const messages2: UIMessage[] = [
         { id: 'msg-2', role: 'user', parts: [{ type: 'text', text: 'Second question' }] },
       ];
-      const stream2Promise = transport.sendMessages({
+      const stream2 = await transport.sendMessages({
         trigger: 'submit-message',
         chatId: 'chat-123',
         messageId: undefined,
@@ -447,18 +507,12 @@ describe('AblyChatTransport', () => {
         abortSignal: undefined,
       });
 
-      const stream2 = await stream2Promise;
+      // Stream1 should be closed
+      const chunks1 = await chunks1Promise;
+      expect(chunks1.length).toBeGreaterThan(0);
+
       const chunks2Promise = collectChunks(stream2);
       await new Promise((r) => setTimeout(r, 10));
-
-      // Stream 1 should have been gracefully finalized (not aborted)
-      const chunks1 = await chunks1Promise;
-      const types1 = chunks1.map((c) => c.type);
-      expect(types1).not.toContain('abort');
-      expect(types1).toContain('finish-step');
-      expect(types1).toContain('finish');
-      const finishChunk = chunks1.find((c) => c.type === 'finish');
-      expect((finishChunk as any).finishReason).toBe('other');
 
       // Get promptId2
       const chatCalls = mockChannel.publishCalls.filter(
@@ -468,7 +522,7 @@ describe('AblyChatTransport', () => {
       expect(promptId2).toBeDefined();
       expect(promptId2).not.toBe(promptId1);
 
-      // Simulate stale messages from response 1 (should be filtered)
+      // Simulate stale messages from response 1 (should be filtered by promptId)
       mockChannel.simulateMessage({
         name: 'text:t0',
         action: 'message.append',
@@ -543,7 +597,7 @@ describe('AblyChatTransport', () => {
   });
 
   describe('close', () => {
-    it('cancels active stream and unsubscribes', async () => {
+    it('closes active stream and unsubscribes', async () => {
       // Start a stream
       const stream = await transport.sendMessages({
         trigger: 'submit-message',
@@ -559,9 +613,8 @@ describe('AblyChatTransport', () => {
       // Close the transport
       transport.close();
 
-      // Stream should end
+      // Stream should end (controller.close() called by cancelActiveDrain)
       const chunks = await chunksPromise;
-      // May have some chunks or none, but should not hang
       expect(Array.isArray(chunks)).toBe(true);
 
       // Listener should be cleared

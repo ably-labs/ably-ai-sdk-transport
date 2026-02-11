@@ -27,15 +27,16 @@ export async function subscribeToChannel(options: SubscribeToChannelOptions): Pr
   let inflight: { controller: AbortController; done: Promise<void> } | null = null;
 
   const handleChatMessage = async (message: Ably.InboundMessage) => {
+    if (inflight) {
+      console.log('Aborting in-flight generation due to new chat message');
+      inflight.controller.abort();
+      await inflight.done.catch(() => {});
+    }
+
     const { message: userMessage } = JSON.parse(message.data as string) as {
       message: UIMessage;
     };
     messages.push(userMessage);
-
-    if (inflight) {
-      inflight.controller.abort();
-      await inflight.done.catch(() => {});
-    }
 
     const promptId = message.extras?.headers?.promptId as string | undefined;
     const abortController = new AbortController();
@@ -55,7 +56,7 @@ export async function subscribeToChannel(options: SubscribeToChannelOptions): Pr
       });
 
       const assistantMessages = await accumulateMessages(chunks);
-      messages.push(...assistantMessages.filter((m) => m.parts.length > 0));
+      messages.push(...assistantMessages);
     })();
 
     inflight = { controller: abortController, done: publishPromise };
@@ -139,11 +140,12 @@ export async function subscribeToChannel(options: SubscribeToChannelOptions): Pr
     // Only process client-published messages (role: "user")
     const role = message.extras?.headers?.role;
     if (role !== 'user') return;
-    console.log('Prompt received from client:', JSON.stringify(message));
     console.log('Current conversation state messages before processing this prompt:');
     for (const msg of messages) {
       console.log('    - ', JSON.stringify(msg));
     }
+    console.log('Prompt received from client:');
+    console.log('    - ', JSON.stringify(message));
 
     switch (message.name) {
       case 'chat-message':
@@ -192,7 +194,6 @@ export async function subscribeToChannel(options: SubscribeToChannelOptions): Pr
   };
 }
 
-/** Replay collected chunks through readUIMessageStream to build UIMessages. */
 async function accumulateMessages(chunks: UIMessageChunk[]): Promise<UIMessage[]> {
   const stream = new ReadableStream<UIMessageChunk>({
     start(controller) {
@@ -201,10 +202,11 @@ async function accumulateMessages(chunks: UIMessageChunk[]): Promise<UIMessage[]
     },
   });
 
-  const messages: UIMessage[] = []
+  const byId = new Map<string, UIMessage>();
   for await (const msg of readUIMessageStream({ stream })) {
-      messages.push(msg);
+    byId.set(msg.id, msg);
   }
-  return messages
+
+  return Array.from(byId.values());
 }
 

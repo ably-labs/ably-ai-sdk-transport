@@ -97,7 +97,7 @@ describe('publishToAbly', () => {
       expect(data.messageMetadata).toEqual({ custom: 'data' });
     });
 
-    it('publishes abort', async () => {
+    it('publishes abort on abort chunk', async () => {
       const stream = createChunkStream([
         { type: 'start' },
         { type: 'start-step' },
@@ -106,10 +106,8 @@ describe('publishToAbly', () => {
 
       await publishToAbly({ channel, stream });
 
-      const abortCall = channel.publishCalls.find(
-        (c) => c.message.name === 'abort',
-      );
-      expect(abortCall).toBeDefined();
+      const publishNames = channel.publishCalls.map((c) => c.message.name);
+      expect(publishNames).toEqual(['abort']);
     });
 
     it('publishes error', async () => {
@@ -471,8 +469,82 @@ describe('publishToAbly', () => {
     });
   });
 
+  describe('pending append flushing', () => {
+    it('flushes pending appends before publishing abort sequence', async () => {
+      const controller = new AbortController();
+
+      // Track the order of all operations (publish, append) as they resolve
+      const resolveOrder: string[] = [];
+      const origAppend = channel.appendMessage.bind(channel);
+      const origPublish = channel.publish.bind(channel);
+
+      // Make appends slow so they're still pending when abort fires
+      let appendResolvers: (() => void)[] = [];
+      channel.appendMessage = ((msg: any, op: any) => {
+        const result = origAppend(msg, op);
+        const p = new Promise<any>((resolve) => {
+          appendResolvers.push(() => {
+            resolveOrder.push(`append:${op?.metadata?.event ?? 'unknown'}`);
+            resolve(result);
+          });
+        });
+        return p;
+      }) as any;
+
+      channel.publish = ((msg: any) => {
+        resolveOrder.push(`publish:${msg.name}`);
+        return origPublish(msg);
+      }) as any;
+
+      // Stream that emits text deltas then blocks (simulating ongoing streaming)
+      const stream = new ReadableStream<UIMessageChunk>({
+        start(streamController) {
+          streamController.enqueue({ type: 'start' });
+          streamController.enqueue({ type: 'start-step' });
+          streamController.enqueue({ type: 'text-start', id: 'text-0' } as UIMessageChunk);
+          streamController.enqueue({ type: 'text-delta', id: 'text-0', delta: 'Hello' } as UIMessageChunk);
+          streamController.enqueue({ type: 'text-delta', id: 'text-0', delta: ' world' } as UIMessageChunk);
+        },
+        pull() {
+          // Block until abort cancels the reader
+          return new Promise<void>(() => {});
+        },
+      });
+
+      // Start publishing, then abort after a short delay
+      const publishPromise = publishToAbly({ channel: channel as any, stream, abortSignal: controller.signal });
+
+      // Wait for text-start publish + both text-delta appends to be issued
+      await new Promise((r) => setTimeout(r, 50));
+
+      // Now abort
+      controller.abort();
+
+      // Resolve the pending appends (simulating network completion)
+      for (const resolver of appendResolvers) {
+        resolver();
+      }
+
+      await publishPromise;
+
+      // The key assertion: all append operations resolved BEFORE any terminal publish
+      const firstTerminalIdx = resolveOrder.findIndex(
+        (entry) => entry.startsWith('publish:step-finish') || entry.startsWith('publish:finish') || entry.startsWith('publish:abort'),
+      );
+      const lastAppendIdx = resolveOrder.reduce(
+        (max, entry, idx) => (entry.startsWith('append:') ? idx : max),
+        -1,
+      );
+
+      // All appends should have resolved before the first terminal message
+      if (lastAppendIdx >= 0 && firstTerminalIdx >= 0) {
+        expect(lastAppendIdx).toBeLessThan(firstTerminalIdx);
+      }
+    });
+  });
+
   describe('abort signal handling', () => {
-    it('cancels blocked reader and publishes single abort on signal abort', async () => {
+    it('publishes abort on signal abort mid-step', async () => {
       const controller = new AbortController();
 
       // Stream that blocks on pull — simulates waiting for model output
@@ -492,10 +564,8 @@ describe('publishToAbly', () => {
 
       await publishToAbly({ channel, stream, abortSignal: controller.signal });
 
-      const abortCalls = channel.publishCalls.filter(
-        (c) => c.message.name === 'abort',
-      );
-      expect(abortCalls).toHaveLength(1);
+      const publishNames = channel.publishCalls.map((c) => c.message.name);
+      expect(publishNames).toEqual(['abort']);
     });
 
     it('does not double-publish abort when stream emits abort chunk', async () => {
@@ -648,7 +718,7 @@ describe('publishToAbly', () => {
       }
     });
 
-    it('includes promptId on abort terminal published after signal abort', async () => {
+    it('includes promptId on abort message published after signal abort', async () => {
       const controller = new AbortController();
 
       const stream = new ReadableStream<UIMessageChunk>({
@@ -664,11 +734,12 @@ describe('publishToAbly', () => {
 
       await publishToAbly({ channel, stream, abortSignal: controller.signal, promptId: 'prompt-789' });
 
-      const abortCall = channel.publishCalls.find(
-        (c) => c.message.name === 'abort',
-      );
-      expect(abortCall).toBeDefined();
-      expect(abortCall!.message.extras?.headers?.promptId).toBe('prompt-789');
+      const publishNames = channel.publishCalls.map((c) => c.message.name);
+      expect(publishNames).toEqual(['abort']);
+
+      for (const call of channel.publishCalls) {
+        expect(call.message.extras?.headers?.promptId).toBe('prompt-789');
+      }
     });
 
     it('does not include promptId when not provided', async () => {

@@ -29,10 +29,15 @@ export async function POST(request: Request) {
   await subscribeToChannel({
     channel,
     handler: async ({ messages, abortSignal }) => {
-      console.log('Received messages for channel', messages);
+      const modelMessages = await convertToModelMessages(messages);
+
+      console.log('Model messages');
+      for (const msg of modelMessages) {
+        console.log('    - ', JSON.stringify(msg));
+      }
       const result = streamText({
         model: anthropic('claude-sonnet-4-20250514'),
-        messages: await convertToModelMessages(messages),
+        messages: modelMessages,
         abortSignal,
       });
 

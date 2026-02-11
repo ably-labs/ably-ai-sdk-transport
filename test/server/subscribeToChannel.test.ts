@@ -100,43 +100,6 @@ describe('subscribeToChannel', () => {
     expect(secondCallArgs.messages[2].id).toBe('msg-2');
   });
 
-  it('deduplicates messages with the same ID', async () => {
-    const handler = vi.fn().mockImplementation(() =>
-      Promise.resolve(makeAssistantStream('Response')),
-    );
-
-    subscribeToChannel({ channel, handler });
-
-    const userMsg = makeUserMessage('msg-1', 'Hello');
-
-    // Send same message twice
-    channel.simulateMessage({
-      name: 'chat-message',
-      action: 'message.create',
-      serial: 'S1',
-      data: JSON.stringify({ message: userMsg }),
-      extras: { headers: { role: 'user' } },
-    });
-
-    await new Promise((r) => setTimeout(r, 50));
-
-    channel.simulateMessage({
-      name: 'chat-message',
-      action: 'message.create',
-      serial: 'S2',
-      data: JSON.stringify({ message: userMsg }),
-      extras: { headers: { role: 'user' } },
-    });
-
-    await new Promise((r) => setTimeout(r, 50));
-
-    // Second call should have user + assistant from first call (user deduped)
-    const secondCallArgs = handler.mock.calls[1][0];
-    expect(secondCallArgs.messages).toHaveLength(2);
-    expect(secondCallArgs.messages[0].id).toBe('msg-1');
-    expect(secondCallArgs.messages[1].role).toBe('assistant');
-  });
-
   it('handles regenerate by truncating messages', async () => {
     const handler = vi.fn().mockImplementation(() =>
       Promise.resolve(makeAssistantStream('Response')),

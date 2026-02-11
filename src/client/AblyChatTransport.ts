@@ -74,7 +74,7 @@ export class AblyChatTransport implements ChatTransport<UIMessage> {
     this.channel = options.ably.channels.get(options.channelName);
     this.listener = (msg: Ably.InboundMessage) => {
       if (msg.name && CLIENT_MESSAGE_NAMES.has(msg.name)) return;
-      console.log('client received message', JSON.stringify(msg));
+      console.log(`[${msg.action}] ${msg.name}: ${msg.data}\n${JSON.stringify(msg.extras)}`);
       this.buffer.push(msg);
     };
     // subscribe() returns a promise that resolves once the channel is attached
@@ -132,6 +132,10 @@ export class AblyChatTransport implements ChatTransport<UIMessage> {
       abortSignal: AbortSignal | undefined;
     } & ChatRequestOptions,
   ): Promise<ReadableStream<UIMessageChunk>> {
+    // Cancel any active drain synchronously — before any await — so the old
+    // stream is closed in the same microtask as the AI SDK's pushMessage().
+    this.cancelActiveDrain();
+
     const { trigger, messageId, messages, abortSignal } = options;
     const promptId = crypto.randomUUID();
 
@@ -171,9 +175,24 @@ export class AblyChatTransport implements ChatTransport<UIMessage> {
   }
 
   close(): void {
-    this.activeDrainCtx = null;
-    this.buffer.cancel();
+    this.cancelActiveDrain();
+    this.buffer.cancel(); // unconditional — covers edge case where drain was already null
     this.channel.unsubscribe(this.listener);
+  }
+
+  /**
+   * Gracefully shut down the active drain stream (if any).
+   * Emits finish-step + finish(finishReason:'other') so the AI SDK treats
+   * the response as cleanly ended rather than aborted.
+   */
+  private cancelActiveDrain(): void {
+    if (!this.activeDrainCtx || this.activeDrainCtx.closed) return;
+
+    const prev = this.activeDrainCtx;
+    prev.closed = true;
+    this.buffer.cancel(); // Unblock old drain's pending pull()
+    try { prev.controller.close(); } catch { /* already closed */ }
+    this.activeDrainCtx = null;
   }
 
   private createDrainStream(
@@ -184,20 +203,7 @@ export class AblyChatTransport implements ChatTransport<UIMessage> {
 
     // Cancel any previous active drain — use finish (not abort) to avoid
     // corrupting the AI SDK's internal response-tracking state.
-    if (this.activeDrainCtx && !this.activeDrainCtx.closed) {
-      const prev = this.activeDrainCtx;
-      prev.closed = true;
-      this.buffer.cancel(); // Unblock old drain's pending pull()
-      try {
-        if (prev.emitState.hasEmittedStepStart) {
-          prev.controller.enqueue({ type: 'finish-step' });
-        }
-        if (prev.emitState.hasEmittedStart) {
-          prev.controller.enqueue({ type: 'finish', finishReason: 'other' });
-        }
-        prev.controller.close();
-      } catch { /* already closed */ }
-    }
+    this.cancelActiveDrain();
 
     const serialState = new Map<string, SerialTracker>();
     const emitState = { hasEmittedStart: false, hasEmittedStepStart: false };
