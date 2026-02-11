@@ -359,96 +359,50 @@ describe('publishToAbly', () => {
   });
 
   describe('discrete events', () => {
-    it('publishes file', async () => {
+    it.each([
+      {
+        label: 'file',
+        chunk: { type: 'file', url: 'https://example.com/img.png', mediaType: 'image/png' },
+        expectedName: 'file',
+        expectedData: { url: 'https://example.com/img.png', mediaType: 'image/png' },
+      },
+      {
+        label: 'source-url',
+        chunk: { type: 'source-url', sourceId: 'src-1', url: 'https://example.com', title: 'Example' },
+        expectedName: 'source-url',
+        expectedData: { sourceId: 'src-1', url: 'https://example.com', title: 'Example' },
+      },
+      {
+        label: 'source-document',
+        chunk: { type: 'source-document', sourceId: 'doc-1', mediaType: 'application/pdf', title: 'Report', filename: 'report.pdf' },
+        expectedName: 'source-document',
+        expectedData: { sourceId: 'doc-1', mediaType: 'application/pdf', title: 'Report', filename: 'report.pdf' },
+      },
+      {
+        label: 'data-*',
+        chunk: { type: 'data-progress', data: { percent: 50 }, id: 'p1' },
+        expectedName: 'data-progress',
+        expectedData: { data: { percent: 50 }, id: 'p1' },
+      },
+    ] as const)('publishes $label', async ({ chunk, expectedName, expectedData }) => {
       const stream = createChunkStream([
         { type: 'start' },
         { type: 'start-step' },
-        { type: 'file', url: 'https://example.com/img.png', mediaType: 'image/png' },
+        chunk as any,
         { type: 'finish-step' },
         { type: 'finish', finishReason: 'stop' },
       ]);
 
       await publishToAbly({ channel, stream });
 
-      const fileCall = channel.publishCalls.find(
-        (c) => c.message.name === 'file',
+      const call = channel.publishCalls.find(
+        (c) => c.message.name === expectedName,
       );
-      expect(fileCall).toBeDefined();
-      const data = JSON.parse(fileCall!.message.data);
-      expect(data.url).toBe('https://example.com/img.png');
-      expect(data.mediaType).toBe('image/png');
-    });
-
-    it('publishes source-url', async () => {
-      const stream = createChunkStream([
-        { type: 'start' },
-        { type: 'start-step' },
-        {
-          type: 'source-url',
-          sourceId: 'src-1',
-          url: 'https://example.com',
-          title: 'Example',
-        },
-        { type: 'finish-step' },
-        { type: 'finish', finishReason: 'stop' },
-      ]);
-
-      await publishToAbly({ channel, stream });
-
-      const srcCall = channel.publishCalls.find(
-        (c) => c.message.name === 'source-url',
-      );
-      expect(srcCall).toBeDefined();
-      const data = JSON.parse(srcCall!.message.data);
-      expect(data.sourceId).toBe('src-1');
-      expect(data.url).toBe('https://example.com');
-      expect(data.title).toBe('Example');
-    });
-
-    it('publishes source-document', async () => {
-      const stream = createChunkStream([
-        { type: 'start' },
-        { type: 'start-step' },
-        {
-          type: 'source-document',
-          sourceId: 'doc-1',
-          mediaType: 'application/pdf',
-          title: 'Report',
-          filename: 'report.pdf',
-        },
-        { type: 'finish-step' },
-        { type: 'finish', finishReason: 'stop' },
-      ]);
-
-      await publishToAbly({ channel, stream });
-
-      const docCall = channel.publishCalls.find(
-        (c) => c.message.name === 'source-document',
-      );
-      expect(docCall).toBeDefined();
-      const data = JSON.parse(docCall!.message.data);
-      expect(data.sourceId).toBe('doc-1');
-      expect(data.filename).toBe('report.pdf');
-    });
-
-    it('publishes data-* chunks', async () => {
-      const stream = createChunkStream([
-        { type: 'start' },
-        { type: 'start-step' },
-        { type: 'data-progress', data: { percent: 50 }, id: 'p1' } as any,
-        { type: 'finish-step' },
-        { type: 'finish', finishReason: 'stop' },
-      ]);
-
-      await publishToAbly({ channel, stream });
-
-      const dataCall = channel.publishCalls.find(
-        (c) => c.message.name === 'data-progress',
-      );
-      expect(dataCall).toBeDefined();
-      const data = JSON.parse(dataCall!.message.data);
-      expect(data.data).toEqual({ percent: 50 });
-      expect(data.id).toBe('p1');
+      expect(call).toBeDefined();
+      const data = JSON.parse(call!.message.data);
+      for (const [key, value] of Object.entries(expectedData)) {
+        expect(data[key]).toEqual(value);
+      }
     });
 
     it('publishes transient data-* chunks with both ephemeral and role header', async () => {
@@ -664,56 +618,33 @@ describe('publishToAbly', () => {
   });
 
   describe('promptId', () => {
-    it('includes promptId in extras of all published messages', async () => {
+    it('includes promptId in extras of all publish, append, and update calls', async () => {
+      // Stream that exercises publish, append, and update paths
       const stream = createChunkStream([
         { type: 'start' },
         { type: 'start-step' },
         { type: 'text-start', id: 'text-0' },
         { type: 'text-delta', id: 'text-0', delta: 'Hello' },
         { type: 'text-end', id: 'text-0' },
+        { type: 'tool-input-start', toolCallId: 'call-1', toolName: 'search' },
+        { type: 'tool-input-available', toolCallId: 'call-1', toolName: 'search', input: { q: 'test' } },
+        { type: 'tool-output-available', toolCallId: 'call-1', output: { results: [] } },
         { type: 'finish-step' },
         { type: 'finish', finishReason: 'stop' },
       ]);
 
       await publishToAbly({ channel, stream, promptId: 'prompt-123' });
 
-      // All publish calls should have promptId in extras
       for (const call of channel.publishCalls) {
         expect(call.message.extras?.headers?.promptId).toBe('prompt-123');
         expect(call.message.extras?.headers?.role).toBe('assistant');
       }
-
-      // All append calls should have promptId in extras
       for (const call of channel.appendCalls) {
         expect(call.message.extras?.headers?.promptId).toBe('prompt-123');
         expect(call.message.extras?.headers?.role).toBe('assistant');
       }
-    });
-
-    it('includes promptId in extras of updateMessage calls', async () => {
-      const stream = createChunkStream([
-        { type: 'start' },
-        { type: 'start-step' },
-        { type: 'tool-input-start', toolCallId: 'call-1', toolName: 'search' },
-        {
-          type: 'tool-input-available',
-          toolCallId: 'call-1',
-          toolName: 'search',
-          input: { q: 'test' },
-        },
-        {
-          type: 'tool-output-available',
-          toolCallId: 'call-1',
-          output: { results: [] },
-        },
-        { type: 'finish-step' },
-        { type: 'finish', finishReason: 'stop' },
-      ]);
-
-      await publishToAbly({ channel, stream, promptId: 'prompt-456' });
-
       for (const call of channel.updateCalls) {
-        expect(call.message.extras?.headers?.promptId).toBe('prompt-456');
+        expect(call.message.extras?.headers?.promptId).toBe('prompt-123');
         expect(call.message.extras?.headers?.role).toBe('assistant');
       }
     });

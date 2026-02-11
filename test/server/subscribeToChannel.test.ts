@@ -2,16 +2,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { subscribeToChannel } from '../../src/server/subscribeToChannel.js';
 import { createMockChannel, resetSerialCounter } from '../helpers/mockAbly.js';
 import { createChunkStream } from '../helpers/streamHelpers.js';
+import { makeUserMessage } from '../helpers/messageBuilders.js';
 import type { UIMessage, UIMessageChunk } from 'ai';
 import type * as Ably from 'ably';
-
-function makeUserMessage(id: string, text: string): UIMessage {
-  return {
-    id,
-    role: 'user',
-    parts: [{ type: 'text', text }],
-  };
-}
 
 function makeAssistantStream(text: string): ReadableStream<UIMessageChunk> {
   return createChunkStream([

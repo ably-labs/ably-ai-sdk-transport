@@ -1,64 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import type { InboundMessage } from 'ably';
-import type { UIMessageChunk } from 'ai';
 import { handleCreate } from '../../src/client/handlers/handleCreate.js';
-import type { HandlerContext, SerialTracker } from '../../src/client/types.js';
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function buildMessage(
-  overrides: Partial<InboundMessage> & { name?: string; data?: any; serial?: string; extras?: any } = {},
-): InboundMessage {
-  return {
-    id: 'msg-id',
-    timestamp: Date.now(),
-    action: 'message.create',
-    version: { serial: 'v1', timestamp: Date.now() },
-    annotations: { summary: {} },
-    serial: 'serial-1',
-    name: '',
-    data: undefined,
-    extras: undefined,
-    ...overrides,
-  } as InboundMessage;
-}
-
-class MockController {
-  chunks: UIMessageChunk[] = [];
-  closed = false;
-
-  enqueue(chunk: UIMessageChunk) {
-    this.chunks.push(chunk);
-  }
-
-  close() {
-    this.closed = true;
-  }
-}
-
-function createContext(overrides?: Partial<HandlerContext>): {
-  ctx: HandlerContext;
-  controller: MockController;
-  ensureStarted: ReturnType<typeof vi.fn>;
-} {
-  const controller = new MockController();
-  const ensureStarted = vi.fn();
-  const emitState = { hasEmittedStart: false, hasEmittedStepStart: false };
-  const ctx: HandlerContext = {
-    controller: controller as unknown as ReadableStreamDefaultController<UIMessageChunk>,
-    serialState: new Map<string, SerialTracker>(),
-    ensureStarted,
-    emitState,
-    ...overrides,
-  };
-  return { ctx, controller, ensureStarted };
-}
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
+import type { HandlerContext } from '../../src/client/types.js';
+import { buildInboundMessage } from '../helpers/messageBuilders.js';
+import { createHandlerContext, type MockController } from '../helpers/contextBuilder.js';
 
 describe('handleCreate', () => {
   let controller: MockController;
@@ -66,61 +10,47 @@ describe('handleCreate', () => {
   let ctx: HandlerContext;
 
   beforeEach(() => {
-    ({ ctx, controller, ensureStarted } = createContext());
+    ({ ctx, controller, ensureStarted } = createHandlerContext());
   });
 
-  // 1. text:{id}
-  it('text:{id} — registers serial state, calls ensureStarted, enqueues text-start', () => {
-    const msg = buildMessage({ name: 'text:part-1', serial: 'ser-1' });
+  // ── Streaming message type routing ────────────────────────────────────
+
+  it.each([
+    {
+      label: 'text',
+      name: 'text:part-1',
+      serial: 'ser-1',
+      expectedTracker: { type: 'text', id: 'part-1', accumulated: '' },
+      expectedChunk: { type: 'text-start', id: 'part-1' },
+    },
+    {
+      label: 'reasoning',
+      name: 'reasoning:reason-1',
+      serial: 'ser-2',
+      expectedTracker: { type: 'reasoning', id: 'reason-1', accumulated: '' },
+      expectedChunk: { type: 'reasoning-start', id: 'reason-1' },
+    },
+    {
+      label: 'tool',
+      name: 'tool:call-1:myTool',
+      serial: 'ser-3',
+      expectedTracker: { type: 'tool-input', id: 'call-1', toolName: 'myTool', accumulated: '' },
+      expectedChunk: { type: 'tool-input-start', toolCallId: 'call-1', toolName: 'myTool' },
+    },
+  ])('$label:{id} — registers serial state, calls ensureStarted, enqueues start chunk', ({ name, serial, expectedTracker, expectedChunk }) => {
+    const msg = buildInboundMessage({ name, serial });
 
     handleCreate(msg, ctx);
 
     expect(ensureStarted).toHaveBeenCalledOnce();
-    expect(ctx.serialState.get('ser-1')).toEqual({
-      type: 'text',
-      id: 'part-1',
-      accumulated: '',
-    });
-    expect(controller.chunks).toEqual([{ type: 'text-start', id: 'part-1' }]);
-  });
-
-  // 2. reasoning:{id}
-  it('reasoning:{id} — registers serial state, calls ensureStarted, enqueues reasoning-start', () => {
-    const msg = buildMessage({ name: 'reasoning:reason-1', serial: 'ser-2' });
-
-    handleCreate(msg, ctx);
-
-    expect(ensureStarted).toHaveBeenCalledOnce();
-    expect(ctx.serialState.get('ser-2')).toEqual({
-      type: 'reasoning',
-      id: 'reason-1',
-      accumulated: '',
-    });
-    expect(controller.chunks).toEqual([{ type: 'reasoning-start', id: 'reason-1' }]);
-  });
-
-  // 3. tool:{callId}:{toolName} — streaming tool call
-  it('tool:{callId}:{toolName} — registers serial state, calls ensureStarted, enqueues tool-input-start', () => {
-    const msg = buildMessage({ name: 'tool:call-1:myTool', serial: 'ser-3' });
-
-    handleCreate(msg, ctx);
-
-    expect(ensureStarted).toHaveBeenCalledOnce();
-    expect(ctx.serialState.get('ser-3')).toEqual({
-      type: 'tool-input',
-      id: 'call-1',
-      toolName: 'myTool',
-      accumulated: '',
-    });
-    expect(controller.chunks).toEqual([
-      { type: 'tool-input-start', toolCallId: 'call-1', toolName: 'myTool' },
-    ]);
+    expect(ctx.serialState.get(serial)).toEqual(expectedTracker);
+    expect(controller.chunks).toEqual([expectedChunk]);
   });
 
   // 4. tool:{callId}:{toolName} with tool-input-available
   it('tool:{callId}:{toolName} with tool-input-available — enqueues tool-input-start + tool-input-available with parsed input', () => {
     const inputData = { query: 'hello' };
-    const msg = buildMessage({
+    const msg = buildInboundMessage({
       name: 'tool:call-2:search',
       serial: 'ser-4',
       data: JSON.stringify(inputData),
@@ -145,7 +75,7 @@ describe('handleCreate', () => {
   // 5. step-finish
   it('step-finish — enqueues finish-step and resets emitState.hasEmittedStepStart', () => {
     ctx.emitState.hasEmittedStepStart = true;
-    const msg = buildMessage({ name: 'step-finish' });
+    const msg = buildInboundMessage({ name: 'step-finish' });
 
     handleCreate(msg, ctx);
 
@@ -154,25 +84,40 @@ describe('handleCreate', () => {
     expect(ctx.emitState.hasEmittedStepStart).toBe(false);
   });
 
-  // 7. finish
-  it('finish — enqueues finish with finishReason, closes controller', () => {
-    const msg = buildMessage({
+  // ── Terminal messages ─────────────────────────────────────────────────
+
+  it.each([
+    {
+      label: 'finish',
       name: 'finish',
       data: JSON.stringify({ finishReason: 'stop' }),
-    });
+      expectedChunk: { type: 'finish', finishReason: 'stop' },
+    },
+    {
+      label: 'error',
+      name: 'error',
+      data: JSON.stringify({ errorText: 'Something went wrong' }),
+      expectedChunk: { type: 'error', errorText: 'Something went wrong' },
+    },
+    {
+      label: 'abort',
+      name: 'abort',
+      data: undefined,
+      expectedChunk: { type: 'abort' },
+    },
+  ])('$label — enqueues chunk and closes controller', ({ name, data, expectedChunk }) => {
+    const msg = buildInboundMessage({ name, data });
 
     handleCreate(msg, ctx);
 
-    expect(controller.chunks).toEqual([
-      { type: 'finish', finishReason: 'stop' },
-    ]);
+    expect(controller.chunks).toEqual([expectedChunk]);
     expect(controller.closed).toBe(true);
   });
 
   // 8. finish with messageMetadata
   it('finish with messageMetadata — includes messageMetadata in chunk', () => {
     const metadata = { tokensUsed: 42 };
-    const msg = buildMessage({
+    const msg = buildInboundMessage({
       name: 'finish',
       data: JSON.stringify({ finishReason: 'stop', messageMetadata: metadata }),
     });
@@ -185,35 +130,10 @@ describe('handleCreate', () => {
     expect(controller.closed).toBe(true);
   });
 
-  // 9. error
-  it('error — enqueues error with errorText, closes controller', () => {
-    const msg = buildMessage({
-      name: 'error',
-      data: JSON.stringify({ errorText: 'Something went wrong' }),
-    });
-
-    handleCreate(msg, ctx);
-
-    expect(controller.chunks).toEqual([
-      { type: 'error', errorText: 'Something went wrong' },
-    ]);
-    expect(controller.closed).toBe(true);
-  });
-
-  // 10. abort
-  it('abort — enqueues abort, closes controller', () => {
-    const msg = buildMessage({ name: 'abort' });
-
-    handleCreate(msg, ctx);
-
-    expect(controller.chunks).toEqual([{ type: 'abort' }]);
-    expect(controller.closed).toBe(true);
-  });
-
   // 11. metadata
   it('metadata — enqueues message-metadata', () => {
     const msgMeta = { model: 'gpt-4' };
-    const msg = buildMessage({
+    const msg = buildInboundMessage({
       name: 'metadata',
       data: JSON.stringify({ messageMetadata: msgMeta }),
     });
@@ -226,65 +146,45 @@ describe('handleCreate', () => {
     expect(controller.closed).toBe(false);
   });
 
-  // 12. file
-  it('file — enqueues file with url/mediaType, calls ensureStarted', () => {
-    const msg = buildMessage({
+  // ── Discrete events ───────────────────────────────────────────────────
+
+  it.each([
+    {
+      label: 'file',
       name: 'file',
-      data: JSON.stringify({ url: 'https://example.com/img.png', mediaType: 'image/png' }),
-    });
-
-    handleCreate(msg, ctx);
-
-    expect(ensureStarted).toHaveBeenCalledOnce();
-    expect(controller.chunks).toEqual([
-      { type: 'file', url: 'https://example.com/img.png', mediaType: 'image/png' },
-    ]);
-  });
-
-  // 13. source-url
-  it('source-url — enqueues source-url', () => {
-    const msg = buildMessage({
+      data: { url: 'https://example.com/img.png', mediaType: 'image/png' },
+      expectedChunk: { type: 'file', url: 'https://example.com/img.png', mediaType: 'image/png' },
+    },
+    {
+      label: 'source-url',
       name: 'source-url',
-      data: JSON.stringify({ sourceId: 'src-1', url: 'https://example.com', title: 'Example' }),
-    });
-
-    handleCreate(msg, ctx);
-
-    expect(ensureStarted).toHaveBeenCalledOnce();
-    expect(controller.chunks).toEqual([
-      { type: 'source-url', sourceId: 'src-1', url: 'https://example.com', title: 'Example' },
-    ]);
-  });
-
-  // 14. source-document
-  it('source-document — enqueues source-document', () => {
-    const msg = buildMessage({
+      data: { sourceId: 'src-1', url: 'https://example.com', title: 'Example' },
+      expectedChunk: { type: 'source-url', sourceId: 'src-1', url: 'https://example.com', title: 'Example' },
+    },
+    {
+      label: 'source-document',
       name: 'source-document',
-      data: JSON.stringify({
-        sourceId: 'doc-1',
-        mediaType: 'application/pdf',
-        title: 'My Doc',
-        filename: 'doc.pdf',
-      }),
-    });
-
-    handleCreate(msg, ctx);
-
-    expect(ensureStarted).toHaveBeenCalledOnce();
-    expect(controller.chunks).toEqual([
-      {
+      data: { sourceId: 'doc-1', mediaType: 'application/pdf', title: 'My Doc', filename: 'doc.pdf' },
+      expectedChunk: {
         type: 'source-document',
         sourceId: 'doc-1',
         mediaType: 'application/pdf',
         title: 'My Doc',
         filename: 'doc.pdf',
       },
-    ]);
+    },
+  ])('$label — enqueues chunk, calls ensureStarted', ({ name, data, expectedChunk }) => {
+    const msg = buildInboundMessage({ name, data: JSON.stringify(data) });
+
+    handleCreate(msg, ctx);
+
+    expect(ensureStarted).toHaveBeenCalledOnce();
+    expect(controller.chunks).toEqual([expectedChunk]);
   });
 
-  // 15. data-custom
+  // 15. data-custom (separate because of transient/extras logic)
   it('data-custom — enqueues data-custom chunk', () => {
-    const msg = buildMessage({
+    const msg = buildInboundMessage({
       name: 'data-custom',
       data: JSON.stringify({ data: { foo: 'bar' }, id: 'dc-1' }),
       extras: { ephemeral: true },
@@ -300,7 +200,7 @@ describe('handleCreate', () => {
 
   // 16. unknown message name
   it('unknown message name — does nothing (no enqueue)', () => {
-    const msg = buildMessage({ name: 'totally-unknown' });
+    const msg = buildInboundMessage({ name: 'totally-unknown' });
 
     handleCreate(msg, ctx);
 
