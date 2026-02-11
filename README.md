@@ -1,16 +1,18 @@
 # @ably/ai-sdk-transport
 
-Drop-in [Ably](https://ably.com) transport for the [Vercel AI SDK](https://sdk.vercel.ai) — replaces HTTP SSE with Ably pub/sub for streaming AI responses.
+Drop-in [Ably](https://ably.com) transport for the [Vercel AI SDK](https://sdk.vercel.ai) — replaces HTTP SSE with persistent, resumable AI chat sessions over Ably pub/sub.
 
-## Why Ably instead of SSE?
+## Why Ably instead of the default transport?
 
-| Concern | HTTP SSE | Ably |
+| Scenario | Default Transport (HTTP/SSE) | Ably AI Transport |
 |---|---|---|
-| Fan-out | 1:1 (one connection per client) | Built-in: one publish, N subscribers |
-| Reconnection | Manual (track last event ID, re-request) | Automatic with message continuity |
-| Message persistence | None (ephemeral stream) | Built-in history and rewind |
-| Proxy/firewall issues | SSE blocked by some proxies | WebSocket with automatic fallback |
-| Mobile background | Connection dropped, stream lost | Automatic resume on foreground |
+| Connection drops mid-stream | Response lost; user must re-send | Stream resumes automatically |
+| Page refresh during response | Response lost | Reconnects and continues from where it left off |
+| Multiple tabs / devices | Each tab is independent | All see the same live conversation |
+| User sends a message | HTTP POST to server | Published on Ably channel; server subscribes |
+| Conversation history | Build your own persistence layer | Built-in via Ably channel history |
+| Cancel / stop generation | Abort HTTP request | Cancel propagated to server via channel |
+| Observability | Server logs only | All events (text, tool calls, reasoning) visible on channel |
 
 ## Installation
 
@@ -18,237 +20,197 @@ Drop-in [Ably](https://ably.com) transport for the [Vercel AI SDK](https://sdk.v
 npm install @ably/ai-sdk-transport ably ai
 ```
 
-`ably` (≥ 2.6.0) and `ai` (≥ 5.0.0) are peer dependencies.
+`ably` (>= 2.6.0) and `ai` (>= 6.0.0) are peer dependencies.
 
 ## Quick Start
 
-### 1. Client — use with `useChat()`
+### 1. Prerequisites — Ably setup
+
+1. Create or select an app in the [Ably dashboard](https://ably.com/accounts)
+2. Go to **Settings** > **Channel Rules** and add a rule for namespace `ait`
+3. Enable **Message interactions (annotations, updates, deletes, and appends)**
+4. Copy your API key from the **API Keys** tab
+
+> This transport uses Ably's [mutable messages](https://ably.com/docs/messages/mutable) feature to stream AI responses incrementally. Streaming will not work without the channel rule configured.
+
+### 2. Client — use with `useChat()`
 
 ```tsx
-import { useState } from 'react';
 import Ably from 'ably';
 import { useChat } from '@ai-sdk/react';
 import { AblyChatTransport } from '@ably/ai-sdk-transport';
 
+// 1. Create the transport
 const ably = new Ably.Realtime({ authUrl: '/api/ably-token' });
+const transport = new AblyChatTransport({ ably, channelName: 'ait:my-chat' });
 
-const transport = new AblyChatTransport({
-  ably,
-  api: '/api/chat',
-});
+// 2. Pass it to useChat — replaces the default HTTP transport
+const { messages, sendMessage, setMessages, resumeStream } = useChat({ transport });
 
-function Chat() {
-  const { messages, sendMessage } = useChat({ transport });
-  const [input, setInput] = useState('');
-
-  return (
-    <div>
-      {messages.map((m) => (
-        <div key={m.id}>{m.parts.map((p) => p.type === 'text' && p.text)}</div>
-      ))}
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          if (!input.trim()) return;
-          sendMessage({ text: input });
-          setInput('');
-        }}
-      >
-        <input value={input} onChange={(e) => setInput(e.target.value)} />
-      </form>
-    </div>
-  );
-}
+// 3. Load history and resume any in-progress stream
+const { messages: history, hasActiveStream } = await transport.loadChatHistory();
+if (history.length > 0) setMessages(history);
+if (hasActiveStream) resumeStream();
 ```
 
-### 2. Server — publish AI responses to Ably
+The client publishes messages directly to the Ably channel — no message payload travels over HTTP. A separate `POST` to `/api/chat` tells the server which channel to subscribe to. See [`examples/minimal-chat/`](./examples/minimal-chat/) for a complete working example.
+
+### 3. Server — subscribe and respond
 
 ```typescript
-// app/api/chat/route.ts (Next.js App Router)
 import Ably from 'ably';
 import { streamText, convertToModelMessages } from 'ai';
 import { openai } from '@ai-sdk/openai';
-import { publishToAbly } from '@ably/ai-sdk-transport';
+import { subscribeToChannel } from '@ably/ai-sdk-transport';
 
-const ablyServer = new Ably.Realtime({ key: process.env.ABLY_API_KEY });
+const ably = new Ably.Realtime({ key: process.env.ABLY_API_KEY });
 
-export async function POST(req: Request) {
-  const { id, messages } = await req.json();
+export async function POST(request: Request) {
+  const { channelName } = await request.json();
+  const channel = ably.channels.get(channelName);
 
-  const result = streamText({
-    model: openai('gpt-4o'),
-    messages: await convertToModelMessages(messages),
+  const cleanup = await subscribeToChannel({
+    channel,
+    presence: {},
+    handler: async ({ messages, abortSignal }) => {
+      const result = streamText({
+        model: openai('gpt-4o'),
+        messages: await convertToModelMessages(messages),
+        abortSignal,
+      });
+      return result.toUIMessageStream();
+    },
   });
 
-  const channel = ablyServer.channels.get(`ait:${id}`);
-  const stream = result.toUIMessageStream();
-
-  // Publish in the background — don't block the response
-  publishToAbly({ channel, stream });
-
-  return new Response(null, { status: 202 });
+  return new Response('OK', { status: 200 });
 }
 ```
 
-### 3. Ably configuration
+The server subscribes to the Ably channel and waits for client messages. When a message arrives, the `handler` is called with the full conversation history. The response stream is published back through the same channel.
 
-This transport uses Ably's [mutable messages](https://ably.com/docs/messages/mutable) feature (`message.create`, `message.append`, `message.update`) to stream AI responses incrementally. Mutable messages must be explicitly enabled via a channel rule in the Ably dashboard.
-
-#### Enable mutable messages
-
-1. Open the [Ably dashboard](https://ably.com/accounts) and select your app
-2. Go to the **Settings** tab
-3. Under **Configuration** -> **Rules**, click **Add new rule**
-4. Set the namespace to `ait` (this matches the default `channelName` used by the transport)
-5. Enable **Message interactions (annotations, updates, deletes, and appends)**
-
-> **Note:** If you configure a custom `channelName` when creating the transport, the namespace in your channel rule must match. For example, if your channel name is `my-ai:response`, the rule namespace should be `my-ai`.
-
-#### Token authentication
-
-Create a token authentication endpoint:
+### 4. Token authentication
 
 ```typescript
-// app/api/ably-token/route.ts
-import Ably from 'ably';
-
-const ably = new Ably.Rest({ key: process.env.ABLY_API_KEY });
+import jwt from 'jsonwebtoken';
 
 export async function GET() {
-  const token = await ably.auth.createTokenRequest({
-    clientId: 'user-id',
-    capability: { 'ait:*': ['subscribe', 'history'] },
+  const apiKey = process.env.ABLY_API_KEY!;
+  const [keyName, keySecret] = apiKey.split(':');
+
+  const token = jwt.sign(
+    {
+      'x-ably-capability': JSON.stringify({
+        'ait:*': ['publish', 'subscribe', 'history', 'presence'],
+      }),
+    },
+    keySecret,
+    { algorithm: 'HS256', keyid: keyName, expiresIn: '1h' },
+  );
+
+  return new Response(token, {
+    headers: { 'Content-Type': 'application/jwt' },
   });
-  return Response.json(token);
 }
 ```
 
-## API Reference
+Clients need four capabilities: `publish` (send messages), `subscribe` (receive responses), `history` (load past messages), and `presence` (detect agent connectivity).
 
-### `AblyChatTransport`
+## How it works
 
-Client-side transport implementing the AI SDK's `ChatTransport<UIMessage>` interface.
-
-```typescript
-import { AblyChatTransport } from '@ably/ai-sdk-transport';
-
-const transport = new AblyChatTransport(options);
+```
+Client (browser)                         Server (Node.js)
+     |                                        |
+     |-- publish "chat-message" ------------->|
+     |                                        |-- handler() called
+     |                                        |-- streamText() generates response
+     |<--- message.create (text:abc) ---------|-- response streamed as Ably messages
+     |<--- message.append (delta) ------------|
+     |<--- message.append (delta) ------------|
+     |<--- finish ----------------------------|
 ```
 
-#### Options
+Both client and server connect to the same Ably channel. The client publishes user messages; the server publishes AI responses. Echo filtering prevents each side from processing its own messages.
 
-| Option | Type | Default | Description |
-|---|---|---|---|
-| `ably` | `Ably.Realtime` | *required* | Ably Realtime client instance |
-| `api` | `string` | `'/api/chat'` | Server endpoint URL |
-| `headers` | `Record<string, string>` | `{}` | Default headers for HTTP requests |
-| `channelName` | `(chatId: string) => string` | `` chatId => `ait:${chatId}` `` | Custom channel naming function |
-| `fetch` | `typeof fetch` | `globalThis.fetch` | Custom fetch implementation |
+Ably's [mutable messages](https://ably.com/docs/messages/mutable) (`message.create` / `message.append` / `message.update`) enable efficient incremental streaming — text deltas are appended to a single message rather than publishing thousands of individual messages.
 
-#### Methods
+## Features
 
-- **`sendMessages(options)`** — Subscribes to the Ably channel, sends an HTTP POST to the server, and returns a `ReadableStream<UIMessageChunk>` of the AI response.
+### Chat history
 
-- **`reconnectToStream(options)`** — Queries channel history and reattaches to an in-flight stream. Returns `null` if the stream has already completed or no history exists.
+History is fetched using `channel.history({ untilAttach: true })`, which provides a clean boundary between pre-existing messages and live ones. Channel history persists for 24–72 hours depending on your Ably plan.
 
-### `publishToAbly`
+### Stream reconnection
 
-Server-side function that consumes a `UIMessageStream` and publishes it to an Ably channel.
+The transport handles reconnection at three levels:
 
-```typescript
-import { publishToAbly } from '@ably/ai-sdk-transport';
+1. **Brief disconnect (< 2 min)** — Ably automatically resumes the connection and replays missed messages. No application code needed.
+2. **Extended disconnect** — `loadChatHistory()` fetches everything published while the client was offline. `hasActiveStream` tells you whether to call `resumeStream()`.
+3. **Page reload** — Same as (2). Load history, check `hasActiveStream`, resume if needed.
 
-await publishToAbly(options);
-```
+### Agent presence
 
-#### Options
-
-| Option | Type | Default | Description |
-|---|---|---|---|
-| `channel` | `Ably.RealtimeChannel` | *required* | Ably channel to publish to |
-| `stream` | `ReadableStream<UIMessageChunk>` | *required* | Stream from `toUIMessageStream()` |
-| `abortSignal` | `AbortSignal` | — | Signal to abort publishing |
-
-## Reconnection
-
-The transport supports three tiers of reconnection, all handled automatically:
-
-1. **Brief disconnection** — Ably resumes the connection and replays missed messages. No action needed.
-2. **Extended disconnection** — The channel is configured with `rewind: '1s'` to catch messages published just before subscription.
-3. **App restart / page reload** — Call `reconnectToStream()` to query channel history, replay completed events, and reattach to any in-flight stream.
+Detect whether the server-side agent is connected:
 
 ```typescript
-// On page load, check for an active stream
-const stream = await transport.reconnectToStream({ chatId: 'chat-123' });
-if (stream) {
-  // Resume processing the stream
-}
-```
-
-## Channel Configuration
-
-By default, channels are named `ait:{chatId}`. Customize this with the `channelName` option:
-
-```typescript
-const transport = new AblyChatTransport({
-  ably,
-  channelName: (chatId) => `my-app:conversations:${chatId}`,
+// Client
+const unsubscribe = transport.onAgentPresenceChange((isPresent) => {
+  console.log(isPresent ? 'Agent online' : 'Agent offline');
 });
 ```
 
-Ensure your Ably token capabilities match the channel namespace you use.
+Server-side, pass `presence: {}` to `subscribeToChannel()` to automatically enter presence on the channel.
+
+### Cancellation
+
+When the user calls `stop()` via the AI SDK, the transport publishes a `user-abort` event on the channel. The server's `subscribeToChannel()` handler receives it and aborts the in-flight `streamText()` call via the `abortSignal`, stopping token generation and saving LLM costs.
+
+### Debugging
+
+Wrap the transport to log every chunk to the console:
+
+```typescript
+import { AblyChatTransport, debugTransport } from '@ably/ai-sdk-transport';
+
+const transport = new AblyChatTransport({ ably, channelName: 'ait:my-chat' });
+const { messages } = useChat({ transport: debugTransport(transport) });
+```
+
+Or debug an individual stream with `debugStream(stream)`.
+
+## Ably configuration
+
+### Mutable messages
+
+This transport requires Ably's mutable messages feature. It uses `message.create` to start a content stream, `message.append` to add text deltas, and `message.update` to finalize tool results. Without mutable messages enabled on the channel namespace, streaming will not work.
+
+To enable: Ably dashboard > your app > **Settings** > **Channel Rules** > add a rule for your namespace (default: `ait`) > enable **Message interactions**.
+
+### Channel namespace
+
+The default convention is to prefix channel names with `ait:` (e.g., `ait:my-chat`). Your Ably channel rule namespace must match whatever prefix you use in `channelName`.
+
+### Token capabilities
+
+Client tokens need four capabilities on the channel namespace:
+
+| Capability | Purpose |
+|---|---|
+| `publish` | Send user messages and abort signals |
+| `subscribe` | Receive AI responses |
+| `history` | Load conversation history |
+| `presence` | Detect agent connectivity |
+
+## Limitations of the Vercel AI SDK
+
+1. **Single user, single device.** Multiple tabs and devices receive the same streamed responses via Ably, but the AI SDK's `useChat` hook expects a request-response pattern. This means that the UI SDK cannot handle responses and messages triggered on another device or by another user. 
+
+2. **One response at a time.** The AI SDK does not support concurrent assistant responses. Sending a new message while a response is streaming will abort the in-progress stream.
+
+3. **Persistent server required.** `subscribeToChannel()` maintains a long running in-memory subscription to Ably. Serverless environments (Vercel Functions, AWS Lambda) lose state on cold starts, or are not long running. For production, run the agent subscriber in a persistent process.
 
 ## Examples
 
-### Express server
-
-```typescript
-import express from 'express';
-import Ably from 'ably';
-import { streamText } from 'ai';
-import { openai } from '@ai-sdk/openai';
-import { publishToAbly } from '@ably/ai-sdk-transport';
-
-const app = express();
-const ably = new Ably.Realtime({ key: process.env.ABLY_API_KEY });
-
-app.post('/api/chat', express.json(), async (req, res) => {
-  const { id, messages } = req.body;
-
-  const result = streamText({
-    model: openai('gpt-4o'),
-    messages,
-  });
-
-  const channel = ably.channels.get(`ait:${id}`);
-  publishToAbly({ channel, stream: result.toUIMessageStream() });
-
-  res.status(202).end();
-});
-
-app.listen(3000);
-```
-
-### With tools
-
-```typescript
-const result = streamText({
-  model: openai('gpt-4o'),
-  messages,
-  tools: {
-    search: {
-      description: 'Search the web',
-      parameters: z.object({ query: z.string() }),
-      execute: async ({ query }) => {
-        return { results: await searchWeb(query) };
-      },
-    },
-  },
-});
-
-// Tool calls, inputs, and outputs are all streamed through Ably
-publishToAbly({ channel, stream: result.toUIMessageStream() });
-```
+See [`examples/minimal-chat/`](./examples/minimal-chat/) for a complete Next.js App Router example with chat history, stream reconnection, and agent presence detection.
 
 ## Contributing
 

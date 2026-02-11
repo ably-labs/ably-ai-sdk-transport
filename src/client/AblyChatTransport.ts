@@ -61,7 +61,7 @@ class MessageBuffer {
 }
 
 export class AblyChatTransport implements ChatTransport<UIMessage> {
-  private readonly channel: Ably.RealtimeChannel;
+  private readonly _channel: Ably.RealtimeChannel;
   private readonly buffer = new MessageBuffer();
   private readonly historyLimit: number;
   private readonly attached: Promise<unknown>;
@@ -71,14 +71,14 @@ export class AblyChatTransport implements ChatTransport<UIMessage> {
 
   constructor(options: AblyChatTransportOptions) {
     this.historyLimit = options.historyLimit ?? 100;
-    this.channel = options.ably.channels.get(options.channelName);
+    this._channel = options.ably.channels.get(options.channelName);
     this.listener = (msg: Ably.InboundMessage) => {
       if (msg.name && CLIENT_MESSAGE_NAMES.has(msg.name)) return;
       console.log(`[${msg.action}] ${msg.name}: ${msg.data}\n${JSON.stringify(msg.extras)}`);
       this.buffer.push(msg);
     };
     // subscribe() returns a promise that resolves once the channel is attached
-    this.attached = this.channel.subscribe(this.listener);
+    this.attached = this._channel.subscribe(this.listener);
   }
 
   /**
@@ -94,7 +94,7 @@ export class AblyChatTransport implements ChatTransport<UIMessage> {
 
     let items: Ably.InboundMessage[];
     try {
-      const history = await this.channel.history({ untilAttach: true, limit });
+      const history = await this._channel.history({ untilAttach: true, limit });
       items = history.items;
     } catch {
       // Ably throws when the channel has no history (empty response body).
@@ -143,7 +143,7 @@ export class AblyChatTransport implements ChatTransport<UIMessage> {
 
     // Publish the trigger message
     if (trigger === 'submit-message') {
-      await this.channel.publish({
+      await this._channel.publish({
         name: 'chat-message',
         data: JSON.stringify({
           message: messages[messages.length - 1],
@@ -151,7 +151,7 @@ export class AblyChatTransport implements ChatTransport<UIMessage> {
         extras,
       });
     } else if (trigger === 'regenerate-message') {
-      await this.channel.publish({
+      await this._channel.publish({
         name: 'regenerate',
         data: JSON.stringify({
           ...(messageId != null ? { messageId } : {}),
@@ -202,11 +202,11 @@ export class AblyChatTransport implements ChatTransport<UIMessage> {
       if (isNow !== wasBefore) callback(isNow);
     };
 
-    this.channel.presence.subscribe('enter', onEnter);
-    this.channel.presence.subscribe('leave', onLeave);
+    this._channel.presence.subscribe('enter', onEnter);
+    this._channel.presence.subscribe('leave', onLeave);
 
     // Seed initial state
-    this.channel.presence.get().then((members) => {
+    this._channel.presence.get().then((members) => {
       for (const m of members) {
         if (m.data?.type === 'agent') {
           agentConnections.add(m.connectionId);
@@ -216,20 +216,25 @@ export class AblyChatTransport implements ChatTransport<UIMessage> {
     });
 
     return () => {
-      this.channel.presence.unsubscribe('enter', onEnter);
-      this.channel.presence.unsubscribe('leave', onLeave);
+      this._channel.presence.unsubscribe('enter', onEnter);
+      this._channel.presence.unsubscribe('leave', onLeave);
     };
   }
 
   /** Expose the raw Ably presence object for advanced use cases (e.g. custom presence data or presence history). */
   presence() {
-    return this.channel.presence;
+    return this._channel.presence;
+  }
+
+  /** Expose the raw Ably channel for advanced use cases. */
+  channel() {
+    return this._channel;
   }
 
   close(): void {
     this.cancelActiveDrain();
     this.buffer.cancel(); // unconditional — covers edge case where drain was already null
-    this.channel.unsubscribe(this.listener);
+    this._channel.unsubscribe(this.listener);
   }
 
   /**
@@ -251,7 +256,7 @@ export class AblyChatTransport implements ChatTransport<UIMessage> {
     abortSignal?: AbortSignal,
     promptId?: string,
   ): ReadableStream<UIMessageChunk> {
-    const channel = this.channel;
+    const channel = this._channel;
 
     // Cancel any previous active drain — use finish (not abort) to avoid
     // corrupting the AI SDK's internal response-tracking state.
