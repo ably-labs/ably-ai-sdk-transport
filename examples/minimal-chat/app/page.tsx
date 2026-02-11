@@ -5,6 +5,7 @@ import { useSearchParams } from 'next/navigation';
 import { useChat } from '@ai-sdk/react';
 import { useAbly } from 'ably/react';
 import { AblyChatTransport } from '@ably/ai-sdk-transport';
+import ReactMarkdown from 'react-markdown';
 
 const DEFAULT_CHANNEL = 'ait:myChatApp';
 
@@ -80,7 +81,7 @@ function ChatView({ transport }: { transport: AblyChatTransport }) {
             {m.parts
               .filter((p) => p.type === 'text')
               .map((p, i) => (
-                <span key={i}>{p.text}</span>
+                <ReactMarkdown key={i}>{p.text}</ReactMarkdown>
               ))}
           </div>
         ))}

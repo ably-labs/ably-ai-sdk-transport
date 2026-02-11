@@ -30,3 +30,40 @@
   margin-bottom: 1rem;
   color: #888;
 }
+
+/* Markdown styles within chat messages */
+.chat-message pre {
+  background: #f4f4f4;
+  padding: 0.75rem;
+  border-radius: 4px;
+  overflow-x: auto;
+}
+
+.chat-message code {
+  background: #f4f4f4;
+  padding: 0.1rem 0.3rem;
+  border-radius: 3px;
+  font-size: 0.9em;
+}
+
+.chat-message pre code {
+  background: none;
+  padding: 0;
+}
+
+.chat-message p {
+  margin: 0.4rem 0;
+}
+
+.chat-message ul,
+.chat-message ol {
+  margin: 0.4rem 0;
+  padding-left: 1.5rem;
+}
+
+.chat-message blockquote {
+  border-left: 3px solid #ccc;
+  margin: 0.4rem 0;
+  padding-left: 0.75rem;
+  color: #555;
+}
