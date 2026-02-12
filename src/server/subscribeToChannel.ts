@@ -30,7 +30,9 @@ export interface SubscribeToChannelOptions {
   logger?: Logger;
 }
 
-export async function subscribeToChannel(options: SubscribeToChannelOptions): Promise<() => void> {
+export async function subscribeToChannel(
+  options: SubscribeToChannelOptions,
+): Promise<() => Promise<void>> {
   const {
     channel,
     handler,
@@ -46,7 +48,16 @@ export async function subscribeToChannel(options: SubscribeToChannelOptions): Pr
   /** In-flight generation: abort controller + publish promise. */
   let inflight: { controller: AbortController; done: Promise<void> } | null = null;
 
+  // Gate message handling until history is seeded to avoid processing messages
+  // with incomplete conversation state.
+  let resolveReady: () => void;
+  const ready = new Promise<void>((r) => {
+    resolveReady = r;
+  });
+
   const handleChatMessage = async (message: Ably.InboundMessage) => {
+    await ready;
+
     if (inflight) {
       logger.debug('Aborting in-flight generation due to new chat message');
       inflight.controller.abort();
@@ -56,10 +67,13 @@ export async function subscribeToChannel(options: SubscribeToChannelOptions): Pr
     const { message: userMessage } = JSON.parse(message.data as string) as {
       message: UIMessage;
     };
-    messages.push(userMessage);
 
     const promptId = message.extras?.headers?.promptId as string | undefined;
     const abortController = new AbortController();
+    const messageCountBefore = messages.length;
+
+    // Push user message before calling handler so it's included in the snapshot
+    messages.push(userMessage);
 
     const publishPromise = (async () => {
       const stream = await handler({
@@ -84,6 +98,10 @@ export async function subscribeToChannel(options: SubscribeToChannelOptions): Pr
 
     try {
       await publishPromise;
+    } catch (err) {
+      // Roll back to pre-message state so conversation isn't left inconsistent
+      messages.length = messageCountBefore;
+      throw err;
     } finally {
       if (inflight?.done === publishPromise) {
         inflight = null;
@@ -92,9 +110,14 @@ export async function subscribeToChannel(options: SubscribeToChannelOptions): Pr
   };
 
   const handleRegenerate = async (message: Ably.InboundMessage) => {
+    await ready;
+
     const { messageId } = JSON.parse(message.data as string) as {
       messageId?: string;
     };
+
+    // Snapshot for rollback on failure
+    const snapshot = [...messages];
 
     // Remove the last assistant message (or the one identified by messageId)
     if (messageId) {
@@ -144,6 +167,11 @@ export async function subscribeToChannel(options: SubscribeToChannelOptions): Pr
 
     try {
       await publishPromise;
+    } catch (err) {
+      // Roll back to pre-regenerate state
+      messages.length = 0;
+      messages.push(...snapshot);
+      throw err;
     } finally {
       if (inflight?.done === publishPromise) {
         inflight = null;
@@ -157,52 +185,46 @@ export async function subscribeToChannel(options: SubscribeToChannelOptions): Pr
   };
 
   // Subscribe to client events — filter by role header to skip our own echoes.
-  // channel.subscribe() resolves once attached, then we seed from history.
-  await channel
-    .subscribe((message: Ably.InboundMessage) => {
-      // Only process client-published messages (role: "user")
-      const role = message.extras?.headers?.role;
-      if (role !== 'user') return;
-      logger.debug('Conversation state:', messages.length, 'messages');
-      logger.debug('Prompt received:', message.name, message.extras?.headers?.promptId);
+  await channel.subscribe((message: Ably.InboundMessage) => {
+    // Only process client-published messages (role: "user")
+    const role = message.extras?.headers?.role;
+    if (role !== 'user') return;
+    logger.debug('Conversation state:', messages.length, 'messages');
+    logger.debug('Prompt received:', message.name, message.extras?.headers?.promptId);
 
-      switch (message.name) {
-        case 'chat-message':
-          handleChatMessage(message).catch((err) => {
-            logger.error('Error handling chat-message:', err);
-          });
-          break;
-        case 'regenerate':
-          handleRegenerate(message).catch((err) => {
-            logger.error('Error handling regenerate:', err);
-          });
-          break;
-        case 'user-abort':
-          handleAbort();
-          break;
-      }
-    })
-    .then(async () => {
-      // Channel is now attached — seed conversation from history.
-      // Ably throws when the channel has no history (empty response body),
-      // so we catch and treat it as an empty result.
-      let items: Ably.InboundMessage[];
-      try {
-        const result = await channel.history({ untilAttach: true, limit: historyLimit });
-        items = result.items;
-      } catch {
-        return; // No history to seed
-      }
-      if (items.length === 0) return;
+    switch (message.name) {
+      case 'chat-message':
+        handleChatMessage(message).catch((err) => {
+          logger.error('Error handling chat-message:', err);
+        });
+        break;
+      case 'regenerate':
+        handleRegenerate(message).catch((err) => {
+          logger.error('Error handling regenerate:', err);
+        });
+        break;
+      case 'user-abort':
+        handleAbort();
+        break;
+    }
+  });
 
-      // History returns newest-first; reverse to chronological
+  // Channel is now attached — seed conversation from history before unblocking
+  // message handling. This prevents processing messages with incomplete state.
+  try {
+    const result = await channel.history({ untilAttach: true, limit: historyLimit });
+    const items = result.items;
+    if (items.length > 0) {
       const chronological = [...items].reverse();
       const seeded = reconstructMessages(chronological);
-
-      // Dedup against initialMessages
       const existingIds = new Set(messages.map((m) => m.id));
       messages.push(...seeded.filter((m) => !existingIds.has(m.id)));
-    });
+    }
+  } catch (err) {
+    logger.warn('Failed to load channel history for seeding:', err);
+  } finally {
+    resolveReady!();
+  }
 
   // Enter presence if configured (channel is attached after subscribe resolves)
   const presenceClientId = presence?.clientId ?? 'agent';
@@ -211,14 +233,15 @@ export async function subscribeToChannel(options: SubscribeToChannelOptions): Pr
     await channel.presence.enterClient(presenceClientId, presenceData);
   }
 
-  // Return cleanup function
-  return () => {
+  // Return async cleanup function that waits for in-flight generation to finish
+  return async () => {
     channel.unsubscribe();
     if (presence) {
       channel.presence.leaveClient(presenceClientId, presenceData).catch(() => {});
     }
     if (inflight) {
       inflight.controller.abort();
+      await inflight.done.catch(() => {});
       inflight = null;
     }
   };

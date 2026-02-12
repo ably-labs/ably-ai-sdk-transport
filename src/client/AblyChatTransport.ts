@@ -96,8 +96,8 @@ export class AblyChatTransport implements ChatTransport<UIMessage> {
     try {
       const history = await this._channel.history({ untilAttach: true, limit });
       items = history.items;
-    } catch {
-      // Ably throws when the channel has no history (empty response body).
+    } catch (err) {
+      this.logger.warn('Failed to load channel history:', err);
       this._hasActiveStream = false;
       return empty;
     }
@@ -206,14 +206,20 @@ export class AblyChatTransport implements ChatTransport<UIMessage> {
     this._channel.presence.subscribe('leave', onLeave);
 
     // Seed initial state
-    this._channel.presence.get().then((members) => {
-      for (const m of members) {
-        if (m.data?.type === 'agent') {
-          agentConnections.add(m.connectionId);
+    this._channel.presence
+      .get()
+      .then((members) => {
+        for (const m of members) {
+          if (m.data?.type === 'agent') {
+            agentConnections.add(m.connectionId);
+          }
         }
-      }
-      callback(agentConnections.size > 0);
-    });
+        callback(agentConnections.size > 0);
+      })
+      .catch(() => {
+        // Presence unavailable (e.g. channel not attached yet) — treat as no agents.
+        callback(false);
+      });
 
     return () => {
       this._channel.presence.unsubscribe('enter', onEnter);
@@ -349,6 +355,13 @@ export class AblyChatTransport implements ChatTransport<UIMessage> {
 
   private routeMessage(message: Ably.InboundMessage, ctx: HandlerContext): void {
     const action = message.action;
+
+    // All streaming handlers rely on message.serial as a Map key for tracking
+    // state. Skip messages without a serial to avoid "undefined" key collisions.
+    if (message.serial == null) {
+      this.logger.warn('Skipping message without serial:', message.name, message.action);
+      return;
+    }
 
     if (action === 'message.create') {
       handleCreate(message, ctx);
