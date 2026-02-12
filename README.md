@@ -1,6 +1,6 @@
 # Ably AI Transport for Vercel AI SDK
 
-Drop-in [Ably](https://ably.com) transport for the [Vercel AI SDK](https://sdk.vercel.ai) — replaces HTTP SSE with persistent, resumable AI chat sessions over Ably pub/sub.
+Drop-in [Ably](https://ably.com) transport for the [Vercel AI SDK](https://sdk.vercel.ai) — replaces HTTP SSE with persistent, resumable AI chat sessions over Ably Pub/Sub.
 
 ## Why Ably instead of the default transport?
 
@@ -27,9 +27,8 @@ npm install @ably/ai-sdk-transport ably ai
 ### 1. Prerequisites — Ably setup
 
 1. Create or select an app in the [Ably dashboard](https://ably.com/accounts)
-2. Go to **Settings** > **Channel Rules** and add a rule for namespace `ait`
-3. Enable **Message interactions (annotations, updates, deletes, and appends)**
-4. Copy your API key from the **API Keys** tab
+2. Go to **Configuration** > **Rules** and add a rule for namespace `ait` with feature **Message annotations, updates, appends, and deletes** enabled
+3. Copy your API key from the **API Keys** tab
 
 > This transport uses Ably's [mutable messages](https://ably.com/docs/messages/mutable) feature to stream AI responses incrementally. Streaming will not work without the channel rule configured.
 
@@ -183,7 +182,7 @@ Or debug an individual stream with `debugStream(stream)`.
 
 This transport requires Ably's mutable messages feature. It uses `message.create` to start a content stream, `message.append` to add text deltas, and `message.update` to finalize tool results. Without mutable messages enabled on the channel namespace, streaming will not work.
 
-To enable: Ably dashboard > your app > **Settings** > **Channel Rules** > add a rule for your namespace (default: `ait`) > enable **Message interactions**.
+To enable: Ably dashboard > your app > **Configuration** > **Rules** > add a rule for your namespace (default: `ait`) > enable feature **Message annotations, updates, appends, and deletes**.
 
 ### Channel namespace
 
