@@ -11,9 +11,8 @@ A working demo of [`@ably/ai-sdk-transport`](../../README.md) with Next.js and C
 ## Ably setup
 
 1. Create or select an app in the [Ably dashboard](https://ably.com/accounts)
-2. Go to **Settings** > **Channel Rules** and add a rule for namespace `ait`
-3. Enable **Message interactions (annotations, updates, deletes, and appends)**
-4. Copy your API key from the **API Keys** tab
+2. Go to **Configuration** > **Rules** and add a rule for namespace `ait` with feature **Message annotations, updates, appends, and deletes** enabled
+3. Copy your API key from the **API Keys** tab
 
 > Mutable messages must be enabled for streaming to work. See the [main README](../../README.md#ably-configuration) for details.
 
