@@ -3,8 +3,7 @@ import { subscribeToChannel } from '../../src/server/subscribeToChannel.js';
 import { createMockChannel, resetSerialCounter, type MockPresence } from '../helpers/mockAbly.js';
 import { createChunkStream } from '../helpers/streamHelpers.js';
 import { makeUserMessage } from '../helpers/messageBuilders.js';
-import type { UIMessage, UIMessageChunk } from 'ai';
-import type * as Ably from 'ably';
+import type { UIMessageChunk } from 'ai';
 
 function makeAssistantStream(text: string): ReadableStream<UIMessageChunk> {
   return createChunkStream([
@@ -52,9 +51,9 @@ describe('subscribeToChannel', () => {
   });
 
   it('accumulates messages in conversation store', async () => {
-    const handler = vi.fn().mockImplementation(() =>
-      Promise.resolve(makeAssistantStream('Response')),
-    );
+    const handler = vi
+      .fn()
+      .mockImplementation(() => Promise.resolve(makeAssistantStream('Response')));
 
     subscribeToChannel({ channel, handler });
 
@@ -94,9 +93,9 @@ describe('subscribeToChannel', () => {
   });
 
   it('handles regenerate by truncating messages', async () => {
-    const handler = vi.fn().mockImplementation(() =>
-      Promise.resolve(makeAssistantStream('Response')),
-    );
+    const handler = vi
+      .fn()
+      .mockImplementation(() => Promise.resolve(makeAssistantStream('Response')));
 
     subscribeToChannel({ channel, handler });
 
@@ -228,9 +227,7 @@ describe('subscribeToChannel', () => {
   it('seeds conversation with initialMessages', async () => {
     const handler = vi.fn().mockResolvedValue(makeAssistantStream('Response'));
 
-    const initial = [
-      makeUserMessage('init-1', 'Preloaded message'),
-    ];
+    const initial = [makeUserMessage('init-1', 'Preloaded message')];
 
     subscribeToChannel({ channel, handler, initialMessages: initial });
 
@@ -257,9 +254,7 @@ describe('subscribeToChannel', () => {
   it('deduplicates history against initialMessages', async () => {
     const handler = vi.fn().mockResolvedValue(makeAssistantStream('Response'));
 
-    const initial = [
-      makeUserMessage('hist-1', 'Old message'),
-    ];
+    const initial = [makeUserMessage('hist-1', 'Old message')];
 
     // Pre-populate history with the same message ID
     (channel as any).publishedMessages.push(
@@ -399,9 +394,9 @@ describe('subscribeToChannel', () => {
   });
 
   it('passes promptId from regenerate trigger to published response messages', async () => {
-    const handler = vi.fn().mockImplementation(() =>
-      Promise.resolve(makeAssistantStream('Regenerated')),
-    );
+    const handler = vi
+      .fn()
+      .mockImplementation(() => Promise.resolve(makeAssistantStream('Regenerated')));
 
     subscribeToChannel({ channel, handler });
 

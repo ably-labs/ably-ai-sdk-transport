@@ -1,11 +1,14 @@
 import type * as Ably from 'ably';
 import type { UIMessageChunk } from 'ai';
+import { noopLogger } from '../logger';
+import type { Logger } from '../logger';
 
 export interface PublishToAblyOptions {
   channel: Ably.RealtimeChannel;
   stream: ReadableStream<UIMessageChunk>;
   abortSignal?: AbortSignal;
   promptId?: string;
+  logger?: Logger;
 }
 
 interface SerialState {
@@ -14,7 +17,7 @@ interface SerialState {
 }
 
 export async function publishToAbly(options: PublishToAblyOptions): Promise<UIMessageChunk[]> {
-  const { channel, stream, abortSignal, promptId } = options;
+  const { channel, stream, abortSignal, promptId, logger = noopLogger } = options;
 
   const serials = new Map<string, SerialState>();
   const pendingAppends: Promise<unknown>[] = [];
@@ -24,10 +27,13 @@ export async function publishToAbly(options: PublishToAblyOptions): Promise<UIMe
   const reader = stream.getReader();
   let terminalPublished = false; // Terminal is a marker for the complete end of the stream: finish, error, or abort
 
-  async function publishAbortSequence() {
-    // Flush all pipelined appends so they arrive before terminal messages
+  async function flushAppends() {
     await Promise.all(pendingAppends);
     pendingAppends.length = 0;
+  }
+
+  async function publishAbortSequence() {
+    await flushAppends();
 
     if (!terminalPublished) {
       await channel.publish({ name: 'abort', data: '{}', extras });
@@ -42,12 +48,11 @@ export async function publishToAbly(options: PublishToAblyOptions): Promise<UIMe
   }
 
   try {
-    console.log('chunks received:');
     while (true) {
       const { done, value: chunk } = await reader.read();
       if (done) break;
       chunks.push(chunk);
-      console.log('    - ', JSON.stringify(chunk));
+      logger.debug('Chunk:', chunk.type, chunk);
 
       switch (chunk.type) {
         // ── Lifecycle ─────────────────────────────────
@@ -62,19 +67,21 @@ export async function publishToAbly(options: PublishToAblyOptions): Promise<UIMe
         }
 
         case 'finish-step': {
+          logger.debug(`[publish] finish-step — flushing ${pendingAppends.length} pending appends`);
+          await flushAppends();
           await channel.publish({ name: 'step-finish', data: '{}', extras });
           break;
         }
 
         case 'finish': {
+          logger.debug(`[publish] finish — flushing ${pendingAppends.length} pending appends`);
+          await flushAppends();
           terminalPublished = true;
           await channel.publish({
             name: 'finish',
             data: JSON.stringify({
               finishReason: chunk.finishReason ?? 'stop',
-              ...(chunk.messageMetadata != null
-                ? { messageMetadata: chunk.messageMetadata }
-                : {}),
+              ...(chunk.messageMetadata != null ? { messageMetadata: chunk.messageMetadata } : {}),
             }),
             extras,
           });
@@ -88,6 +95,7 @@ export async function publishToAbly(options: PublishToAblyOptions): Promise<UIMe
         }
 
         case 'error': {
+          await flushAppends();
           terminalPublished = true;
           await channel.publish({
             name: 'error',
@@ -126,20 +134,24 @@ export async function publishToAbly(options: PublishToAblyOptions): Promise<UIMe
         case 'text-delta': {
           const state = serials.get(chunk.id);
           if (!state) throw new Error(`No serial for text ${chunk.id}`);
-          pendingAppends.push(channel.appendMessage(
-            { serial: state.serial, data: chunk.delta, extras },
-            { metadata: { event: 'text-delta' } },
-          ));
+          pendingAppends.push(
+            channel.appendMessage(
+              { serial: state.serial, data: chunk.delta, extras },
+              { metadata: { event: 'text-delta' } },
+            ),
+          );
           break;
         }
 
         case 'text-end': {
           const state = serials.get(chunk.id);
           if (!state) throw new Error(`No serial for text ${chunk.id}`);
-          pendingAppends.push(channel.appendMessage(
-            { serial: state.serial, data: '', extras },
-            { metadata: { event: 'text-end' } },
-          ));
+          pendingAppends.push(
+            channel.appendMessage(
+              { serial: state.serial, data: '', extras },
+              { metadata: { event: 'text-end' } },
+            ),
+          );
           serials.delete(chunk.id);
           break;
         }
@@ -162,20 +174,24 @@ export async function publishToAbly(options: PublishToAblyOptions): Promise<UIMe
         case 'reasoning-delta': {
           const state = serials.get(chunk.id);
           if (!state) throw new Error(`No serial for reasoning ${chunk.id}`);
-          pendingAppends.push(channel.appendMessage(
-            { serial: state.serial, data: chunk.delta, extras },
-            { metadata: { event: 'reasoning-delta' } },
-          ));
+          pendingAppends.push(
+            channel.appendMessage(
+              { serial: state.serial, data: chunk.delta, extras },
+              { metadata: { event: 'reasoning-delta' } },
+            ),
+          );
           break;
         }
 
         case 'reasoning-end': {
           const state = serials.get(chunk.id);
           if (!state) throw new Error(`No serial for reasoning ${chunk.id}`);
-          pendingAppends.push(channel.appendMessage(
-            { serial: state.serial, data: '', extras },
-            { metadata: { event: 'reasoning-end' } },
-          ));
+          pendingAppends.push(
+            channel.appendMessage(
+              { serial: state.serial, data: '', extras },
+              { metadata: { event: 'reasoning-end' } },
+            ),
+          );
           serials.delete(chunk.id);
           break;
         }
@@ -196,12 +212,13 @@ export async function publishToAbly(options: PublishToAblyOptions): Promise<UIMe
 
         case 'tool-input-delta': {
           const state = serials.get(chunk.toolCallId);
-          if (!state)
-            throw new Error(`No serial for tool ${chunk.toolCallId}`);
-          pendingAppends.push(channel.appendMessage(
-            { serial: state.serial, data: chunk.inputTextDelta, extras },
-            { metadata: { event: 'tool-input-delta' } },
-          ));
+          if (!state) throw new Error(`No serial for tool ${chunk.toolCallId}`);
+          pendingAppends.push(
+            channel.appendMessage(
+              { serial: state.serial, data: chunk.inputTextDelta, extras },
+              { metadata: { event: 'tool-input-delta' } },
+            ),
+          );
           break;
         }
 
@@ -209,10 +226,12 @@ export async function publishToAbly(options: PublishToAblyOptions): Promise<UIMe
           const state = serials.get(chunk.toolCallId);
           if (state) {
             // Streaming tool call: send end signal
-            pendingAppends.push(channel.appendMessage(
-              { serial: state.serial, data: '', extras },
-              { metadata: { event: 'tool-input-end' } },
-            ));
+            pendingAppends.push(
+              channel.appendMessage(
+                { serial: state.serial, data: '', extras },
+                { metadata: { event: 'tool-input-end' } },
+              ),
+            );
           } else {
             // Non-streaming tool call: publish full input
             const result = await channel.publish({
@@ -230,8 +249,7 @@ export async function publishToAbly(options: PublishToAblyOptions): Promise<UIMe
 
         case 'tool-output-available': {
           const state = serials.get(chunk.toolCallId);
-          if (!state)
-            throw new Error(`No serial for tool ${chunk.toolCallId}`);
+          if (!state) throw new Error(`No serial for tool ${chunk.toolCallId}`);
           await channel.updateMessage({
             serial: state.serial,
             name: `tool-output:${chunk.toolCallId}`,
@@ -243,8 +261,7 @@ export async function publishToAbly(options: PublishToAblyOptions): Promise<UIMe
 
         case 'tool-output-error': {
           const state = serials.get(chunk.toolCallId);
-          if (!state)
-            throw new Error(`No serial for tool ${chunk.toolCallId}`);
+          if (!state) throw new Error(`No serial for tool ${chunk.toolCallId}`);
           await channel.updateMessage({
             serial: state.serial,
             name: `tool-error:${chunk.toolCallId}`,
@@ -300,9 +317,7 @@ export async function publishToAbly(options: PublishToAblyOptions): Promise<UIMe
               sourceId: chunk.sourceId,
               mediaType: chunk.mediaType,
               title: chunk.title,
-              ...(chunk.filename != null
-                ? { filename: chunk.filename }
-                : {}),
+              ...(chunk.filename != null ? { filename: chunk.filename } : {}),
             }),
             extras,
           });

@@ -4,10 +4,7 @@ import { handleCreate } from '../../src/client/handlers/handleCreate.js';
 import { handleAppend } from '../../src/client/handlers/handleAppend.js';
 import { handleUpdate } from '../../src/client/handlers/handleUpdate.js';
 import { createChunkStream, collectChunks } from '../helpers/streamHelpers.js';
-import {
-  createMockChannel,
-  resetSerialCounter,
-} from '../helpers/mockAbly.js';
+import { createMockChannel, resetSerialCounter } from '../helpers/mockAbly.js';
 import type { UIMessageChunk } from 'ai';
 import type { InboundMessage } from 'ably';
 import type { SerialTracker, HandlerContext } from '../../src/client/types.js';
@@ -84,15 +81,11 @@ describe('roundtrip: publishToAbly → client handlers', () => {
     const serialToName = new Map<string, string>();
 
     const conflateAfter = options?.conflateAfter;
-    const conflationState = new Map<
-      string,
-      { appendCount: number; accumulated: string }
-    >();
+    const conflationState = new Map<string, { appendCount: number; accumulated: string }>();
 
     ch.publish = (async (nameOrMsg: any) => {
       const result = await origPublish(nameOrMsg);
-      const msg =
-        typeof nameOrMsg === 'object' ? nameOrMsg : { name: nameOrMsg };
+      const msg = typeof nameOrMsg === 'object' ? nameOrMsg : { name: nameOrMsg };
       const serial = result.serials[0]!;
       serialToName.set(serial, msg.name);
 
@@ -215,8 +208,8 @@ describe('roundtrip: publishToAbly → client handlers', () => {
     const types = clientChunks.map((c) => c.type);
 
     expect(types).toEqual([
-      'start',       // synthesized
-      'start-step',  // synthesized
+      'start', // synthesized
+      'start-step', // synthesized
       'text-start',
       'text-delta',
       'text-delta',
@@ -276,14 +269,10 @@ describe('roundtrip: publishToAbly → client handlers', () => {
       'finish',
     ]);
 
-    const available = clientChunks.find(
-      (c) => c.type === 'tool-input-available',
-    ) as any;
+    const available = clientChunks.find((c) => c.type === 'tool-input-available') as any;
     expect(available.input).toEqual({ q: 'ai' });
 
-    const output = clientChunks.find(
-      (c) => c.type === 'tool-output-available',
-    ) as any;
+    const output = clientChunks.find((c) => c.type === 'tool-output-available') as any;
     expect(output.output).toEqual({ results: ['result1'] });
   });
 
@@ -436,9 +425,9 @@ describe('roundtrip: publishToAbly → client handlers', () => {
       'start',
       'start-step',
       'text-start',
-      'text-delta',  // 'Hello' from message.append
-      'text-delta',  // ', world!' from message.update (delta diffed)
-      'text-end',    // from same message.update
+      'text-delta', // 'Hello' from message.append
+      'text-delta', // ', world!' from message.update (delta diffed)
+      'text-end', // from same message.update
       'finish-step',
       'finish',
     ]);
@@ -474,8 +463,8 @@ describe('roundtrip: publishToAbly → client handlers', () => {
       'start',
       'start-step',
       'text-start',
-      'text-delta',  // 'Hello, world!' from message.update (full text as delta)
-      'text-end',    // from same message.update
+      'text-delta', // 'Hello, world!' from message.update (full text as delta)
+      'text-end', // from same message.update
       'finish-step',
       'finish',
     ]);

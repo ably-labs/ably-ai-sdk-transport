@@ -5,7 +5,12 @@ import type { UIMessage } from 'ai';
  * Build an InboundMessage with sensible defaults, overridden by caller.
  */
 export function buildInboundMessage(
-  overrides: Partial<InboundMessage> & { name?: string; data?: any; serial?: string; extras?: any } = {},
+  overrides: Partial<InboundMessage> & {
+    name?: string;
+    data?: any;
+    serial?: string;
+    extras?: any;
+  } = {},
 ): InboundMessage {
   return {
     id: 'msg-id',

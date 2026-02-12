@@ -1,15 +1,10 @@
-import { describe, it, expect, vi } from 'vitest';
-import type { UIMessageChunk } from 'ai';
+import { describe, it, expect } from 'vitest';
 import { handleAppend } from '../../src/client/handlers/handleAppend.js';
 import type { SerialTracker } from '../../src/client/types.js';
 import { buildInboundMessage } from '../helpers/messageBuilders.js';
 import { createHandlerContext } from '../helpers/contextBuilder.js';
 
-function buildAppendMessage(opts: {
-  serial: string;
-  data?: string;
-  event?: string;
-}) {
+function buildAppendMessage(opts: { serial: string; data?: string; event?: string }) {
   return buildInboundMessage({
     action: 'message.append',
     serial: opts.serial,
@@ -54,14 +49,17 @@ describe('handleAppend', () => {
       data: '{"a":',
       expectedChunk: { type: 'tool-input-delta', toolCallId: 'tool-1', inputTextDelta: '{"a":' },
     },
-  ])('$label delta — enqueues delta and updates accumulated', ({ tracker, data, expectedChunk }) => {
-    const { ctx, enqueued } = createHandlerContext({ trackers: [['s1', { ...tracker }]] });
+  ])(
+    '$label delta — enqueues delta and updates accumulated',
+    ({ tracker, data, expectedChunk }) => {
+      const { ctx, enqueued } = createHandlerContext({ trackers: [['s1', { ...tracker }]] });
 
-    handleAppend(buildAppendMessage({ serial: 's1', data }), ctx);
+      handleAppend(buildAppendMessage({ serial: 's1', data }), ctx);
 
-    expect(enqueued).toEqual([expectedChunk]);
-    expect(ctx.serialState.get('s1')!.accumulated).toBe(data);
-  });
+      expect(enqueued).toEqual([expectedChunk]);
+      expect(ctx.serialState.get('s1')!.accumulated).toBe(data);
+    },
+  );
 
   // 3. Text delta with empty data
   it('does not enqueue when text delta data is empty', () => {

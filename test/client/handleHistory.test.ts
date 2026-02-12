@@ -213,9 +213,7 @@ describe('handleHistory', () => {
       });
       handleHistory(msg, ctx);
 
-      expect(enqueued).toEqual([
-        { type: 'finish', finishReason: 'stop' },
-      ]);
+      expect(enqueued).toEqual([{ type: 'finish', finishReason: 'stop' }]);
       expect(close).toHaveBeenCalledOnce();
     });
 
@@ -241,9 +239,7 @@ describe('handleHistory', () => {
       });
       handleHistory(msg, ctx);
 
-      expect(enqueued).toEqual([
-        { type: 'message-metadata', messageMetadata },
-      ]);
+      expect(enqueued).toEqual([{ type: 'message-metadata', messageMetadata }]);
     });
   });
 
@@ -255,13 +251,22 @@ describe('handleHistory', () => {
         label: 'file',
         name: 'file',
         data: { url: 'https://example.com/image.png', mediaType: 'image/png' },
-        expectedChunk: { type: 'file', url: 'https://example.com/image.png', mediaType: 'image/png' },
+        expectedChunk: {
+          type: 'file',
+          url: 'https://example.com/image.png',
+          mediaType: 'image/png',
+        },
       },
       {
         label: 'source-url',
         name: 'source-url',
         data: { sourceId: 's1', url: 'https://example.com', title: 'Example' },
-        expectedChunk: { type: 'source-url', sourceId: 's1', url: 'https://example.com', title: 'Example' },
+        expectedChunk: {
+          type: 'source-url',
+          sourceId: 's1',
+          url: 'https://example.com',
+          title: 'Example',
+        },
       },
       {
         label: 'source-document',
@@ -304,9 +309,7 @@ describe('handleHistory', () => {
       });
       handleHistory(msg, ctx);
 
-      expect(enqueued).toEqual([
-        { type: 'data-metrics', data: [1, 2, 3] },
-      ]);
+      expect(enqueued).toEqual([{ type: 'data-metrics', data: [1, 2, 3] }]);
     });
   });
 

@@ -37,8 +37,14 @@ export interface MockPresence {
   leaveListeners: PresenceListener[];
   simulateEnter: (member: Partial<Ably.PresenceMessage>) => void;
   simulateLeave: (member: Partial<Ably.PresenceMessage>) => void;
-  subscribe: (action: Ably.PresenceAction | Ably.PresenceAction[], listener?: PresenceListener) => Promise<void>;
-  unsubscribe: (action: Ably.PresenceAction | Ably.PresenceAction[], listener?: PresenceListener) => void;
+  subscribe: (
+    action: Ably.PresenceAction | Ably.PresenceAction[],
+    listener?: PresenceListener,
+  ) => Promise<void>;
+  unsubscribe: (
+    action: Ably.PresenceAction | Ably.PresenceAction[],
+    listener?: PresenceListener,
+  ) => void;
   get: (params?: any) => Promise<Ably.PresenceMessage[]>;
   enterClient: (clientId: string, data?: any) => Promise<void>;
   leaveClient: (clientId: string, data?: any) => Promise<void>;
@@ -90,7 +96,10 @@ export function createMockPresence(): MockPresence {
       }
     },
 
-    subscribe(action: Ably.PresenceAction | Ably.PresenceAction[], listener?: PresenceListener): Promise<void> {
+    subscribe(
+      action: Ably.PresenceAction | Ably.PresenceAction[],
+      listener?: PresenceListener,
+    ): Promise<void> {
       if (!listener) return Promise.resolve();
       const actions = Array.isArray(action) ? action : [action];
       for (const a of actions) {
@@ -100,7 +109,10 @@ export function createMockPresence(): MockPresence {
       return Promise.resolve();
     },
 
-    unsubscribe(action: Ably.PresenceAction | Ably.PresenceAction[], listener?: PresenceListener): void {
+    unsubscribe(
+      action: Ably.PresenceAction | Ably.PresenceAction[],
+      listener?: PresenceListener,
+    ): void {
       const actions = Array.isArray(action) ? action : [action];
       for (const a of actions) {
         if (a === 'enter' && listener) {
@@ -120,7 +132,12 @@ export function createMockPresence(): MockPresence {
 
     enterClient(clientId: string, data?: any): Promise<void> {
       enterClientCalls.push({ clientId, data });
-      const msg = makePresenceMessage({ clientId, data, action: 'enter', connectionId: `conn-${clientId}` });
+      const msg = makePresenceMessage({
+        clientId,
+        data,
+        action: 'enter',
+        connectionId: `conn-${clientId}`,
+      });
       members.set(msg.connectionId, msg);
       return Promise.resolve();
     },
@@ -169,7 +186,10 @@ export function createMockChannel(): Ably.RealtimeChannel & {
     stateListeners,
     publishedMessages,
 
-    subscribe(listenerOrEvent: unknown, maybeListener?: unknown): Promise<Ably.ChannelStateChange | null> {
+    subscribe(
+      listenerOrEvent: unknown,
+      maybeListener?: unknown,
+    ): Promise<Ably.ChannelStateChange | null> {
       if (typeof listenerOrEvent === 'function') {
         listeners.push(listenerOrEvent as MessageListener);
       } else if (typeof maybeListener === 'function') {
@@ -213,14 +233,10 @@ export function createMockChannel(): Ably.RealtimeChannel & {
       appendCalls.push({ message, operation });
 
       // Update published message data for history simulation
-      const existing = publishedMessages.find(
-        (m) => m.serial === message.serial,
-      );
+      const existing = publishedMessages.find((m) => m.serial === message.serial);
       if (existing) {
-        const existingData =
-          typeof existing.data === 'string' ? existing.data : '';
-        const appendData =
-          typeof message.data === 'string' ? message.data : '';
+        const existingData = typeof existing.data === 'string' ? existing.data : '';
+        const appendData = typeof message.data === 'string' ? message.data : '';
         existing.data = existingData + appendData;
         if (operation?.metadata) {
           existing.version = {
@@ -245,9 +261,7 @@ export function createMockChannel(): Ably.RealtimeChannel & {
       updateCalls.push({ message, operation });
 
       // Update in published messages
-      const existing = publishedMessages.find(
-        (m) => m.serial === message.serial,
-      );
+      const existing = publishedMessages.find((m) => m.serial === message.serial);
       if (existing) {
         if (message.name) existing.name = message.name;
         if (message.data !== undefined) existing.data = message.data;
@@ -262,7 +276,10 @@ export function createMockChannel(): Ably.RealtimeChannel & {
 
     lastHistoryParams: undefined as { untilAttach?: boolean; limit?: number } | undefined,
 
-    history(params?: { untilAttach?: boolean; limit?: number }): Promise<Ably.PaginatedResult<Ably.InboundMessage>> {
+    history(params?: {
+      untilAttach?: boolean;
+      limit?: number;
+    }): Promise<Ably.PaginatedResult<Ably.InboundMessage>> {
       channel.lastHistoryParams = params;
       const limit = params?.limit ?? 100;
       // Return newest-first (reverse chronological)

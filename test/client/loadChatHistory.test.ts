@@ -1,13 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { AblyChatTransport } from '../../src/client/AblyChatTransport.js';
-import {
-  createMockAbly,
-  createMockChannel,
-  resetSerialCounter,
-} from '../helpers/mockAbly.js';
+import { createMockAbly, createMockChannel, resetSerialCounter } from '../helpers/mockAbly.js';
 import type * as Ably from 'ably';
 
-function makeHistoryResult(items: Partial<Ably.InboundMessage>[]): Ably.PaginatedResult<Ably.InboundMessage> {
+function makeHistoryResult(
+  items: Partial<Ably.InboundMessage>[],
+): Ably.PaginatedResult<Ably.InboundMessage> {
   const fullItems = items.map((item, i) => ({
     id: item.id ?? `id-${i}`,
     name: item.name ?? '',
@@ -119,9 +117,7 @@ describe('loadChatHistory', () => {
     expect(result.messages[0].id).toBe('user-1');
     expect(result.messages[1].role).toBe('assistant');
     expect(result.messages[1].id).toBe('t0');
-    expect(result.messages[1].parts).toEqual([
-      { type: 'text', text: 'Hello there!' },
-    ]);
+    expect(result.messages[1].parts).toEqual([{ type: 'text', text: 'Hello there!' }]);
     expect(result.hasActiveStream).toBe(false);
   });
 

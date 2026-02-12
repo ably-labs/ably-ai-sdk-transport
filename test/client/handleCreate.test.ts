@@ -37,15 +37,18 @@ describe('handleCreate', () => {
       expectedTracker: { type: 'tool-input', id: 'call-1', toolName: 'myTool', accumulated: '' },
       expectedChunk: { type: 'tool-input-start', toolCallId: 'call-1', toolName: 'myTool' },
     },
-  ])('$label:{id} — registers serial state, calls ensureStarted, enqueues start chunk', ({ name, serial, expectedTracker, expectedChunk }) => {
-    const msg = buildInboundMessage({ name, serial });
+  ])(
+    '$label:{id} — registers serial state, calls ensureStarted, enqueues start chunk',
+    ({ name, serial, expectedTracker, expectedChunk }) => {
+      const msg = buildInboundMessage({ name, serial });
 
-    handleCreate(msg, ctx);
+      handleCreate(msg, ctx);
 
-    expect(ensureStarted).toHaveBeenCalledOnce();
-    expect(ctx.serialState.get(serial)).toEqual(expectedTracker);
-    expect(controller.chunks).toEqual([expectedChunk]);
-  });
+      expect(ensureStarted).toHaveBeenCalledOnce();
+      expect(ctx.serialState.get(serial)).toEqual(expectedTracker);
+      expect(controller.chunks).toEqual([expectedChunk]);
+    },
+  );
 
   // 4. tool:{callId}:{toolName} with tool-input-available
   it('tool:{callId}:{toolName} with tool-input-available — enqueues tool-input-start + tool-input-available with parsed input', () => {
@@ -140,9 +143,7 @@ describe('handleCreate', () => {
 
     handleCreate(msg, ctx);
 
-    expect(controller.chunks).toEqual([
-      { type: 'message-metadata', messageMetadata: msgMeta },
-    ]);
+    expect(controller.chunks).toEqual([{ type: 'message-metadata', messageMetadata: msgMeta }]);
     expect(controller.closed).toBe(false);
   });
 
@@ -159,12 +160,22 @@ describe('handleCreate', () => {
       label: 'source-url',
       name: 'source-url',
       data: { sourceId: 'src-1', url: 'https://example.com', title: 'Example' },
-      expectedChunk: { type: 'source-url', sourceId: 'src-1', url: 'https://example.com', title: 'Example' },
+      expectedChunk: {
+        type: 'source-url',
+        sourceId: 'src-1',
+        url: 'https://example.com',
+        title: 'Example',
+      },
     },
     {
       label: 'source-document',
       name: 'source-document',
-      data: { sourceId: 'doc-1', mediaType: 'application/pdf', title: 'My Doc', filename: 'doc.pdf' },
+      data: {
+        sourceId: 'doc-1',
+        mediaType: 'application/pdf',
+        title: 'My Doc',
+        filename: 'doc.pdf',
+      },
       expectedChunk: {
         type: 'source-document',
         sourceId: 'doc-1',

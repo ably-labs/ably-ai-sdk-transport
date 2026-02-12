@@ -2,10 +2,7 @@ import type { InboundMessage } from 'ably';
 import type { HandlerContext } from '../types.js';
 import { parseData, parseJsonData, createTrackerFromName } from '../utils.js';
 
-export function handleUpdate(
-  message: InboundMessage,
-  ctx: HandlerContext,
-): void {
+export function handleUpdate(message: InboundMessage, ctx: HandlerContext): void {
   const name = message.name ?? '';
   const data = parseData(message.data);
 
@@ -63,7 +60,11 @@ export function handleUpdate(
     } else if (tracker.type === 'reasoning') {
       ctx.controller.enqueue({ type: 'reasoning-start', id: tracker.id });
     } else if (tracker.type === 'tool-input') {
-      ctx.controller.enqueue({ type: 'tool-input-start', toolCallId: tracker.id, toolName: tracker.toolName! });
+      ctx.controller.enqueue({
+        type: 'tool-input-start',
+        toolCallId: tracker.id,
+        toolName: tracker.toolName!,
+      });
     }
   }
 
@@ -128,7 +129,12 @@ export function handleUpdate(
           inputTextDelta: delta,
         });
       }
-      const input = JSON.parse(tracker.accumulated);
+      let input: unknown;
+      try {
+        input = JSON.parse(tracker.accumulated);
+      } catch {
+        input = tracker.accumulated;
+      }
       ctx.controller.enqueue({
         type: 'tool-input-available',
         toolCallId: tracker.id,

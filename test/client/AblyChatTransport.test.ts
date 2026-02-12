@@ -1,10 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { AblyChatTransport } from '../../src/client/AblyChatTransport.js';
-import {
-  createMockAbly,
-  createMockChannel,
-  resetSerialCounter,
-} from '../helpers/mockAbly.js';
+import { createMockAbly, createMockChannel, resetSerialCounter } from '../helpers/mockAbly.js';
 import { collectChunks } from '../helpers/streamHelpers.js';
 import { makeUserMessage } from '../helpers/messageBuilders.js';
 import type { UIMessage } from 'ai';
@@ -24,15 +20,11 @@ describe('AblyChatTransport', () => {
     });
   });
 
-  const makeMessages = (): UIMessage[] => [
-    makeUserMessage('msg-1', 'Hello'),
-  ];
+  const makeMessages = (): UIMessage[] => [makeUserMessage('msg-1', 'Hello')];
 
   /** Extract the promptId from the published trigger message. */
   function getPublishedPromptId(triggerName: string): string {
-    const call = mockChannel.publishCalls.find(
-      (c) => c.message.name === triggerName,
-    );
+    const call = mockChannel.publishCalls.find((c) => c.message.name === triggerName);
     return call!.message.extras?.headers?.promptId;
   }
 
@@ -144,9 +136,7 @@ describe('AblyChatTransport', () => {
 
       await collectChunks(stream);
 
-      const regenCall = mockChannel.publishCalls.find(
-        (c) => c.message.name === 'regenerate',
-      );
+      const regenCall = mockChannel.publishCalls.find((c) => c.message.name === 'regenerate');
       expect(regenCall).toBeDefined();
       const regenData = JSON.parse(regenCall!.message.data);
       expect(regenData.messageId).toBe('msg-to-regen');
@@ -298,9 +288,7 @@ describe('AblyChatTransport', () => {
       await new Promise((r) => setTimeout(r, 10));
 
       // Verify user-abort was published with promptId
-      const abortCall = mockChannel.publishCalls.find(
-        (c) => c.message.name === 'user-abort',
-      );
+      const abortCall = mockChannel.publishCalls.find((c) => c.message.name === 'user-abort');
       expect(abortCall).toBeDefined();
       expect(abortCall!.message.extras).toEqual({
         headers: { role: 'user', promptId },
@@ -319,9 +307,9 @@ describe('AblyChatTransport', () => {
 
     it('handles channel.publish failure', async () => {
       // Override publish to reject
-      const publishSpy = vi.spyOn(mockChannel, 'publish').mockRejectedValueOnce(
-        new Error('Channel publish failed'),
-      );
+      const publishSpy = vi
+        .spyOn(mockChannel, 'publish')
+        .mockRejectedValueOnce(new Error('Channel publish failed'));
 
       await expect(
         transport.sendMessages({
@@ -563,7 +551,7 @@ describe('AblyChatTransport', () => {
       expect(types).toEqual([
         'start',
         'start-step',
-        'text-start',     // auto-created from orphan append
+        'text-start', // auto-created from orphan append
         'text-delta',
         'text-delta',
         'text-end',
@@ -612,7 +600,7 @@ describe('AblyChatTransport', () => {
       expect(types).toEqual([
         'start',
         'start-step',
-        'text-start',     // auto-created from orphan update
+        'text-start', // auto-created from orphan update
         'text-delta',
         'text-end',
         'finish-step',
@@ -620,9 +608,7 @@ describe('AblyChatTransport', () => {
       ]);
 
       const deltas = chunks.filter((c) => c.type === 'text-delta');
-      expect(deltas).toEqual([
-        { type: 'text-delta', id: 't0', delta: 'Hello world!' },
-      ]);
+      expect(deltas).toEqual([{ type: 'text-delta', id: 't0', delta: 'Hello world!' }]);
     });
 
     it('stream can be cancelled', async () => {
@@ -683,9 +669,9 @@ describe('AblyChatTransport', () => {
       expect(types1).not.toContain('finish');
 
       // Complete stream2
-      const promptId2 = mockChannel.publishCalls.filter(
-        (c) => c.message.name === 'chat-message',
-      ).pop()!.message.extras?.headers?.promptId;
+      const promptId2 = mockChannel.publishCalls
+        .filter((c) => c.message.name === 'chat-message')
+        .pop()!.message.extras?.headers?.promptId;
       expect(promptId2).toBeDefined();
       expect(promptId2).not.toBe(promptId1);
 
@@ -735,9 +721,7 @@ describe('AblyChatTransport', () => {
       await new Promise((r) => setTimeout(r, 10));
 
       // Send a second message before response 1 finishes
-      const messages2: UIMessage[] = [
-        makeUserMessage('msg-2', 'Second question'),
-      ];
+      const messages2: UIMessage[] = [makeUserMessage('msg-2', 'Second question')];
       const stream2 = await transport.sendMessages({
         trigger: 'submit-message',
         chatId: 'chat-123',
@@ -754,9 +738,7 @@ describe('AblyChatTransport', () => {
       await new Promise((r) => setTimeout(r, 10));
 
       // Get promptId2
-      const chatCalls = mockChannel.publishCalls.filter(
-        (c) => c.message.name === 'chat-message',
-      );
+      const chatCalls = mockChannel.publishCalls.filter((c) => c.message.name === 'chat-message');
       const promptId2 = chatCalls[chatCalls.length - 1].message.extras?.headers?.promptId;
       expect(promptId2).toBeDefined();
       expect(promptId2).not.toBe(promptId1);

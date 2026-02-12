@@ -5,10 +5,7 @@ import { parseData, parseJsonData } from '../utils.js';
 
 type FinishChunk = Extract<UIMessageChunk, { type: 'finish' }>;
 
-export function handleHistory(
-  message: InboundMessage,
-  ctx: HandlerContext,
-): void {
+export function handleHistory(message: InboundMessage, ctx: HandlerContext): void {
   const name = message.name ?? '';
   const data = parseData(message.data);
 
@@ -135,9 +132,7 @@ export function handleHistory(
     ctx.controller.enqueue({
       type: 'finish',
       finishReason: parsed.finishReason as FinishChunk['finishReason'],
-      ...(parsed.messageMetadata != null
-        ? { messageMetadata: parsed.messageMetadata }
-        : {}),
+      ...(parsed.messageMetadata != null ? { messageMetadata: parsed.messageMetadata } : {}),
     });
     ctx.controller.close();
     return;
@@ -184,9 +179,7 @@ export function handleHistory(
       sourceId: parsed.sourceId as string,
       mediaType: parsed.mediaType as string,
       title: parsed.title as string,
-      ...(parsed.filename != null
-        ? { filename: parsed.filename as string }
-        : {}),
+      ...(parsed.filename != null ? { filename: parsed.filename as string } : {}),
     });
     return;
   }

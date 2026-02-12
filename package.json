@@ -26,19 +26,27 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "lint": "eslint src/ test/",
+    "lint:fix": "eslint src/ test/ --fix",
+    "format": "prettier --write 'src/**/*.ts' 'test/**/*.ts'",
+    "format:check": "prettier --check 'src/**/*.ts' 'test/**/*.ts'"
   },
   "peerDependencies": {
     "ably": "^2.6.0",
     "ai": "^6.0.0"
   },
   "devDependencies": {
+    "@vitest/coverage-v8": "^3.0.0",
     "ably": "^2.6.0",
     "ai": "^6.0.0",
+    "eslint": "^9.39.2",
+    "eslint-config-prettier": "^10.1.8",
+    "prettier": "^3.8.1",
     "tsup": "^8.0.0",
     "typescript": "^5.5.0",
-    "vitest": "^3.0.0",
-    "@vitest/coverage-v8": "^3.0.0"
+    "typescript-eslint": "^8.55.0",
+    "vitest": "^3.0.0"
   },
   "license": "Apache-2.0",
   "repository": {

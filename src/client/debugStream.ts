@@ -18,10 +18,7 @@ export function debugStream(
 
   const transform = new TransformStream<UIMessageChunk, UIMessageChunk>({
     transform(chunk, controller) {
-      console.log(
-        `[${label}] #${index++} ${chunk.type}`,
-        JSON.stringify(chunk, null, 2),
-      );
+      console.log(`[${label}] #${index++} ${chunk.type}`, JSON.stringify(chunk, null, 2));
       controller.enqueue(chunk);
     },
   });
@@ -38,9 +35,7 @@ export function debugStream(
  *   const transport = new AblyChatTransport({ ... });
  *   const { messages } = useChat({ transport: debugTransport(transport) });
  */
-export function debugTransport(
-  transport: ChatTransport<UIMessage>,
-): ChatTransport<UIMessage> {
+export function debugTransport(transport: ChatTransport<UIMessage>): ChatTransport<UIMessage> {
   return {
     sendMessages: async (...args) => {
       const stream = await transport.sendMessages(...args);

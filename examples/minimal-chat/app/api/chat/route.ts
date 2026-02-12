@@ -8,15 +8,16 @@ const ablyServer = new Ably.Realtime({ key: process.env.ABLY_API_KEY });
 // In-memory state — works in persistent server processes (next dev / next start)
 // but NOT in serverless environments (Vercel/Lambda) where each cold start
 // creates a new instance and this Map will be empty.
-const subscriptions = new Map<string, () => void>();
+const subscriptions = new Set<string>();
 
 async function startSubscription(channelName: string) {
   const channel = ablyServer.channels.get(channelName);
   console.log(`Subscribing to channel: ${channelName}`);
 
-  const cleanup = await subscribeToChannel({
+  await subscribeToChannel({
     channel,
     presence: {},
+    logger: console,
     handler: async ({ messages, abortSignal }) => {
       const modelMessages = await convertToModelMessages(messages);
 
@@ -33,23 +34,22 @@ async function startSubscription(channelName: string) {
       return result.toUIMessageStream();
     },
   });
-
-  subscriptions.set(channelName, cleanup);
 }
 
 export async function POST(request: Request) {
-  const { channelName } = (await request.json()) as { channelName: string };
+  const { channelName } = (await request.json()) as {
+    channelName: string;
+  };
 
   if (!channelName) {
     return new Response('Missing channelName', { status: 400 });
   }
 
-  // If already subscribed, tear down and re-subscribe (supports reconnect)
-  const existing = subscriptions.get(channelName);
-  if (existing) {
-    existing();
-    subscriptions.delete(channelName);
+  if (subscriptions.has(channelName)) {
+    return new Response('Already subscribed', { status: 200 });
   }
+
+  subscriptions.add(channelName);
 
   await startSubscription(channelName);
 

@@ -3,6 +3,8 @@ import type { UIMessage, UIMessageChunk } from 'ai';
 import { readUIMessageStream } from 'ai';
 import { reconstructMessages } from '../shared';
 import { publishToAbly } from './publishToAbly';
+import { noopLogger } from '../logger';
+import type { Logger } from '../logger';
 
 export interface SubscribeToChannelOptions {
   channel: Ably.RealtimeChannel;
@@ -25,10 +27,18 @@ export interface SubscribeToChannelOptions {
     /** Additional data to merge with `{ type: 'agent' }`. */
     data?: Record<string, unknown>;
   };
+  logger?: Logger;
 }
 
 export async function subscribeToChannel(options: SubscribeToChannelOptions): Promise<() => void> {
-  const { channel, handler, historyLimit = 100, initialMessages = [], presence } = options;
+  const {
+    channel,
+    handler,
+    historyLimit = 100,
+    initialMessages = [],
+    presence,
+    logger = noopLogger,
+  } = options;
 
   /** Single conversation state for this channel. */
   const messages: UIMessage[] = [...initialMessages];
@@ -38,7 +48,7 @@ export async function subscribeToChannel(options: SubscribeToChannelOptions): Pr
 
   const handleChatMessage = async (message: Ably.InboundMessage) => {
     if (inflight) {
-      console.log('Aborting in-flight generation due to new chat message');
+      logger.debug('Aborting in-flight generation due to new chat message');
       inflight.controller.abort();
       await inflight.done.catch(() => {});
     }
@@ -63,6 +73,7 @@ export async function subscribeToChannel(options: SubscribeToChannelOptions): Pr
         stream,
         abortSignal: abortController.signal,
         promptId,
+        logger,
       });
 
       const assistantMessages = await accumulateMessages(chunks);
@@ -122,6 +133,7 @@ export async function subscribeToChannel(options: SubscribeToChannelOptions): Pr
         stream,
         abortSignal: abortController.signal,
         promptId,
+        logger,
       });
 
       const assistantMessages = await accumulateMessages(chunks);
@@ -140,59 +152,57 @@ export async function subscribeToChannel(options: SubscribeToChannelOptions): Pr
   };
 
   const handleAbort = () => {
-    console.log('Abort signal received from client');
+    logger.debug('Abort signal received from client');
     inflight?.controller.abort();
   };
 
   // Subscribe to client events — filter by role header to skip our own echoes.
   // channel.subscribe() resolves once attached, then we seed from history.
-  await channel.subscribe((message: Ably.InboundMessage) => {
-    // Only process client-published messages (role: "user")
-    const role = message.extras?.headers?.role;
-    if (role !== 'user') return;
-    console.log('Current conversation state messages before processing this prompt:');
-    for (const msg of messages) {
-      console.log('    - ', JSON.stringify(msg));
-    }
-    console.log('Prompt received from client:');
-    console.log('    - ', JSON.stringify(message));
+  await channel
+    .subscribe((message: Ably.InboundMessage) => {
+      // Only process client-published messages (role: "user")
+      const role = message.extras?.headers?.role;
+      if (role !== 'user') return;
+      logger.debug('Conversation state:', messages.length, 'messages');
+      logger.debug('Prompt received:', message.name, message.extras?.headers?.promptId);
 
-    switch (message.name) {
-      case 'chat-message':
-        handleChatMessage(message).catch((err) => {
-          console.error('Error handling chat-message:', err);
-        });
-        break;
-      case 'regenerate':
-        handleRegenerate(message).catch((err) => {
-          console.error('Error handling regenerate:', err);
-        });
-        break;
-      case 'user-abort':
-        handleAbort();
-        break;
-    }
-  }).then(async () => {
-    // Channel is now attached — seed conversation from history.
-    // Ably throws when the channel has no history (empty response body),
-    // so we catch and treat it as an empty result.
-    let items: Ably.InboundMessage[];
-    try {
-      const result = await channel.history({ untilAttach: true, limit: historyLimit });
-      items = result.items;
-    } catch {
-      return; // No history to seed
-    }
-    if (items.length === 0) return;
+      switch (message.name) {
+        case 'chat-message':
+          handleChatMessage(message).catch((err) => {
+            logger.error('Error handling chat-message:', err);
+          });
+          break;
+        case 'regenerate':
+          handleRegenerate(message).catch((err) => {
+            logger.error('Error handling regenerate:', err);
+          });
+          break;
+        case 'user-abort':
+          handleAbort();
+          break;
+      }
+    })
+    .then(async () => {
+      // Channel is now attached — seed conversation from history.
+      // Ably throws when the channel has no history (empty response body),
+      // so we catch and treat it as an empty result.
+      let items: Ably.InboundMessage[];
+      try {
+        const result = await channel.history({ untilAttach: true, limit: historyLimit });
+        items = result.items;
+      } catch {
+        return; // No history to seed
+      }
+      if (items.length === 0) return;
 
-    // History returns newest-first; reverse to chronological
-    const chronological = [...items].reverse();
-    const seeded = reconstructMessages(chronological);
+      // History returns newest-first; reverse to chronological
+      const chronological = [...items].reverse();
+      const seeded = reconstructMessages(chronological);
 
-    // Dedup against initialMessages
-    const existingIds = new Set(messages.map((m) => m.id));
-    messages.push(...seeded.filter((m) => !existingIds.has(m.id)));
-  });
+      // Dedup against initialMessages
+      const existingIds = new Set(messages.map((m) => m.id));
+      messages.push(...seeded.filter((m) => !existingIds.has(m.id)));
+    });
 
   // Enter presence if configured (channel is attached after subscribe resolves)
   const presenceClientId = presence?.clientId ?? 'agent';
@@ -229,4 +239,3 @@ async function accumulateMessages(chunks: UIMessageChunk[]): Promise<UIMessage[]
 
   return Array.from(byId.values());
 }
-

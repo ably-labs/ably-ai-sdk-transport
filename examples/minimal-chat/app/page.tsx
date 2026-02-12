@@ -19,7 +19,7 @@ function Chat() {
   const [transport, setTransport] = useState<AblyChatTransport | null>(null);
 
   useEffect(() => {
-    const t = new AblyChatTransport({ ably, channelName });
+    const t = new AblyChatTransport({ ably, channelName, logger: console });
     setTransport(t);
     return () => t.close();
   }, [ably, channelName]);

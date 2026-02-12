@@ -147,35 +147,51 @@ describe('handleUpdate', () => {
       event: 'tool-input-end',
       expectedChunks: [
         { type: 'tool-input-delta', toolCallId: 'tool-2', inputTextDelta: '42}' },
-        { type: 'tool-input-available', toolCallId: 'tool-2', toolName: 'calculate', input: { x: 42 } },
+        {
+          type: 'tool-input-available',
+          toolCallId: 'tool-2',
+          toolName: 'calculate',
+          input: { x: 42 },
+        },
       ],
       removesTracker: false,
     },
-  ])('conflated $label — extracts delta and enqueues correct chunks', ({
-    trackerType, id, accumulated, newData, event, expectedChunks, removesTracker, toolName,
-  }) => {
-    const serial = 'serial-test';
-    const tracker = trackerType === 'tool-input'
-      ? { type: trackerType, id, toolName: toolName!, accumulated }
-      : { type: trackerType, id, accumulated };
-    ctx.serialState.set(serial, tracker);
+  ])(
+    'conflated $label — extracts delta and enqueues correct chunks',
+    ({
+      trackerType,
+      id,
+      accumulated,
+      newData,
+      event,
+      expectedChunks,
+      removesTracker,
+      toolName,
+    }) => {
+      const serial = 'serial-test';
+      const tracker =
+        trackerType === 'tool-input'
+          ? { type: trackerType, id, toolName: toolName!, accumulated }
+          : { type: trackerType, id, accumulated };
+      ctx.serialState.set(serial, tracker);
 
-    const msg = makeUpdateMessage({
-      serial,
-      data: newData,
-      version: { serial: 'v-test', timestamp: Date.now(), metadata: { event } },
-    });
+      const msg = makeUpdateMessage({
+        serial,
+        data: newData,
+        version: { serial: 'v-test', timestamp: Date.now(), metadata: { event } },
+      });
 
-    handleUpdate(msg, ctx);
+      handleUpdate(msg, ctx);
 
-    expect(ensureStarted).toHaveBeenCalled();
-    expect(enqueued).toEqual(expectedChunks);
-    if (removesTracker) {
-      expect(ctx.serialState.has(serial)).toBe(false);
-    } else {
-      expect(ctx.serialState.get(serial)!.accumulated).toBe(newData);
-    }
-  });
+      expect(ensureStarted).toHaveBeenCalled();
+      expect(enqueued).toEqual(expectedChunks);
+      if (removesTracker) {
+        expect(ctx.serialState.has(serial)).toBe(false);
+      } else {
+        expect(ctx.serialState.get(serial)!.accumulated).toBe(newData);
+      }
+    },
+  );
 
   // ─── 10. Unknown serial in conflation case ─────────────────────────
 

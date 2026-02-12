@@ -27,9 +27,7 @@ const SKIP_NAMES = new Set(['step-finish', 'metadata', 'user-abort']);
  * content is accumulated from `text:`, `reasoning:`, `tool:`, `tool-output:`,
  * and `tool-error:` messages.
  */
-export function reconstructMessages(
-  chronological: InboundMessage[],
-): UIMessage[] {
+export function reconstructMessages(chronological: InboundMessage[]): UIMessage[] {
   const messages: UIMessage[] = [];
   let currentAssistant: UIMessage | null = null;
 

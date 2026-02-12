@@ -6,3 +6,5 @@ export type { PublishToAblyOptions } from './server/publishToAbly';
 export { subscribeToChannel } from './server/subscribeToChannel';
 export type { SubscribeToChannelOptions } from './server/subscribeToChannel';
 export { reconstructMessages } from './shared';
+export { noopLogger } from './logger';
+export type { Logger } from './logger';

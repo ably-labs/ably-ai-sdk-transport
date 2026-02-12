@@ -1,15 +1,12 @@
 import type * as Ably from 'ably';
-import type {
-  ChatTransport,
-  UIMessage,
-  UIMessageChunk,
-  ChatRequestOptions,
-} from 'ai';
+import type { ChatTransport, UIMessage, UIMessageChunk, ChatRequestOptions } from 'ai';
 import type { SerialTracker, HandlerContext } from './types';
 import { createEnsureStarted, reconstructMessages, TERMINAL_NAMES } from './utils';
 import { handleCreate } from './handlers/handleCreate';
 import { handleAppend } from './handlers/handleAppend';
 import { handleUpdate } from './handlers/handleUpdate';
+import { noopLogger } from '../logger';
+import type { Logger } from '../logger';
 
 /** Names of messages published by the client — used for echo filtering. */
 const CLIENT_MESSAGE_NAMES = new Set(['chat-message', 'regenerate', 'user-abort']);
@@ -18,6 +15,7 @@ export interface AblyChatTransportOptions {
   ably: Ably.Realtime;
   channelName: string;
   historyLimit?: number;
+  logger?: Logger;
 }
 
 export interface LoadChatHistoryResult {
@@ -66,15 +64,17 @@ export class AblyChatTransport implements ChatTransport<UIMessage> {
   private readonly historyLimit: number;
   private readonly attached: Promise<unknown>;
   private readonly listener: (msg: Ably.InboundMessage) => void;
+  private readonly logger: Logger;
   private _hasActiveStream = false;
   private activeDrainCtx: HandlerContext | null = null;
 
   constructor(options: AblyChatTransportOptions) {
     this.historyLimit = options.historyLimit ?? 100;
+    this.logger = options.logger ?? noopLogger;
     this._channel = options.ably.channels.get(options.channelName);
     this.listener = (msg: Ably.InboundMessage) => {
       if (msg.name && CLIENT_MESSAGE_NAMES.has(msg.name)) return;
-      console.log(`[${msg.action}] ${msg.name}: ${msg.data}\n${JSON.stringify(msg.extras)}`);
+      this.logger.debug(`[${msg.action}] ${msg.name}: ${msg.data}`, msg.extras);
       this.buffer.push(msg);
     };
     // subscribe() returns a promise that resolves once the channel is attached
@@ -115,7 +115,7 @@ export class AblyChatTransport implements ChatTransport<UIMessage> {
 
     // Sort chronologically by serial (history returns newest-first)
     const chronological = [...items].sort((a, b) => ((a.serial ?? '') > (b.serial ?? '') ? 1 : -1));
-    console.log('loaded history', chronological)
+    this.logger.debug('Loaded history:', chronological.length, 'messages');
 
     // Reconstruct UIMessage[]
     const messages = reconstructMessages(chronological);
@@ -248,7 +248,11 @@ export class AblyChatTransport implements ChatTransport<UIMessage> {
     const prev = this.activeDrainCtx;
     prev.closed = true;
     this.buffer.cancel(); // Unblock old drain's pending pull()
-    try { prev.controller.close(); } catch { /* already closed */ }
+    try {
+      prev.controller.close();
+    } catch {
+      /* already closed */
+    }
     this.activeDrainCtx = null;
   }
 
@@ -268,7 +272,13 @@ export class AblyChatTransport implements ChatTransport<UIMessage> {
     return new ReadableStream<UIMessageChunk>({
       start: (controller) => {
         const ensureStarted = createEnsureStarted(controller, emitState);
-        const ctx: HandlerContext = { controller, serialState, ensureStarted, emitState, closed: false };
+        const ctx: HandlerContext = {
+          controller,
+          serialState,
+          ensureStarted,
+          emitState,
+          closed: false,
+        };
 
         // Track this drain as the active one
         this.activeDrainCtx = ctx;
@@ -282,14 +292,21 @@ export class AblyChatTransport implements ChatTransport<UIMessage> {
         });
 
         // Async drain loop
+        let drainSeq = 0;
         const drain = async () => {
+          this.logger.debug('[drain] started');
           while (!ctx.closed) {
             const msg = await this.buffer.pull();
             if (msg === null) {
+              this.logger.debug('[drain] buffer returned null (cancelled)');
               // Buffer was cancelled (e.g. transport.close())
               if (!ctx.closed) {
                 ctx.closed = true;
-                try { controller.close(); } catch { /* already closed */ }
+                try {
+                  controller.close();
+                } catch {
+                  /* already closed */
+                }
               }
               break;
             }
@@ -297,22 +314,29 @@ export class AblyChatTransport implements ChatTransport<UIMessage> {
             // Filter by promptId: skip messages from a different prompt
             const msgPromptId = msg.extras?.headers?.promptId;
             if (promptId && msgPromptId && msgPromptId !== promptId) {
+              this.logger.debug(`[drain] #${drainSeq++} SKIPPED (promptId mismatch) ${msg.action} ${msg.name}`);
               continue;
             }
 
+            this.logger.debug(`[drain] #${drainSeq++} routing ${msg.action} ${msg.name}: ${typeof msg.data === 'string' ? msg.data.slice(0, 80) : msg.data}`);
+
             try {
               this.routeMessage(msg, ctx);
+              if (ctx.closed) {
+                this.logger.debug(`[drain] stream closed after routing ${msg.name}, serialState keys:`, [...ctx.serialState.keys()]);
+              }
             } catch (err) {
+              this.logger.error('[drain] routeMessage threw:', err);
               if (ctx.closed) return;
               ctx.closed = true;
               controller.enqueue({
                 type: 'error',
-                errorText:
-                  err instanceof Error ? err.message : 'Unknown transport error',
+                errorText: err instanceof Error ? err.message : 'Unknown transport error',
               });
               controller.close();
             }
           }
+          this.logger.debug(`[drain] exited loop, ctx.closed=${ctx.closed}`);
         };
         drain();
       },
@@ -323,10 +347,7 @@ export class AblyChatTransport implements ChatTransport<UIMessage> {
     });
   }
 
-  private routeMessage(
-    message: Ably.InboundMessage,
-    ctx: HandlerContext,
-  ): void {
+  private routeMessage(message: Ably.InboundMessage, ctx: HandlerContext): void {
     const action = message.action;
 
     if (action === 'message.create') {

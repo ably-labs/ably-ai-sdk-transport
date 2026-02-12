@@ -72,9 +72,7 @@ describe('publishToAbly', () => {
 
       await publishToAbly({ channel, stream });
 
-      const finishCall = channel.publishCalls.find(
-        (c) => c.message.name === 'finish',
-      );
+      const finishCall = channel.publishCalls.find((c) => c.message.name === 'finish');
       expect(finishCall).toBeDefined();
       const data = JSON.parse(finishCall!.message.data);
       expect(data.finishReason).toBe('length');
@@ -90,9 +88,7 @@ describe('publishToAbly', () => {
 
       await publishToAbly({ channel, stream });
 
-      const finishCall = channel.publishCalls.find(
-        (c) => c.message.name === 'finish',
-      );
+      const finishCall = channel.publishCalls.find((c) => c.message.name === 'finish');
       const data = JSON.parse(finishCall!.message.data);
       expect(data.messageMetadata).toEqual({ custom: 'data' });
     });
@@ -119,9 +115,7 @@ describe('publishToAbly', () => {
 
       await publishToAbly({ channel, stream });
 
-      const errorCall = channel.publishCalls.find(
-        (c) => c.message.name === 'error',
-      );
+      const errorCall = channel.publishCalls.find((c) => c.message.name === 'error');
       expect(errorCall).toBeDefined();
       const data = JSON.parse(errorCall!.message.data);
       expect(data.errorText).toBe('Something went wrong');
@@ -138,9 +132,7 @@ describe('publishToAbly', () => {
 
       await publishToAbly({ channel, stream });
 
-      const metaCall = channel.publishCalls.find(
-        (c) => c.message.name === 'metadata',
-      );
+      const metaCall = channel.publishCalls.find((c) => c.message.name === 'metadata');
       expect(metaCall).toBeDefined();
       const data = JSON.parse(metaCall!.message.data);
       expect(data.messageMetadata).toEqual({ foo: 'bar' });
@@ -163,23 +155,17 @@ describe('publishToAbly', () => {
       await publishToAbly({ channel, stream });
 
       // Verify create
-      const createCall = channel.publishCalls.find(
-        (c) => c.message.name?.startsWith('text:'),
-      );
+      const createCall = channel.publishCalls.find((c) => c.message.name?.startsWith('text:'));
       expect(createCall).toBeDefined();
       expect(createCall!.message.data).toBe('');
 
       // Verify appends
       expect(channel.appendCalls).toHaveLength(3); // 2 deltas + 1 end
       expect(channel.appendCalls[0].message.data).toBe('Hello');
-      expect(channel.appendCalls[0].operation?.metadata?.event).toBe(
-        'text-delta',
-      );
+      expect(channel.appendCalls[0].operation?.metadata?.event).toBe('text-delta');
       expect(channel.appendCalls[1].message.data).toBe(' world');
       expect(channel.appendCalls[2].message.data).toBe('');
-      expect(channel.appendCalls[2].operation?.metadata?.event).toBe(
-        'text-end',
-      );
+      expect(channel.appendCalls[2].operation?.metadata?.event).toBe('text-end');
     });
   });
 
@@ -197,20 +183,14 @@ describe('publishToAbly', () => {
 
       await publishToAbly({ channel, stream });
 
-      const createCall = channel.publishCalls.find(
-        (c) => c.message.name?.startsWith('reasoning:'),
-      );
+      const createCall = channel.publishCalls.find((c) => c.message.name?.startsWith('reasoning:'));
       expect(createCall).toBeDefined();
 
       expect(channel.appendCalls).toHaveLength(2);
       expect(channel.appendCalls[0].message.data).toBe('thinking...');
-      expect(channel.appendCalls[0].operation?.metadata?.event).toBe(
-        'reasoning-delta',
-      );
+      expect(channel.appendCalls[0].operation?.metadata?.event).toBe('reasoning-delta');
       expect(channel.appendCalls[1].message.data).toBe('');
-      expect(channel.appendCalls[1].operation?.metadata?.event).toBe(
-        'reasoning-end',
-      );
+      expect(channel.appendCalls[1].operation?.metadata?.event).toBe('reasoning-end');
     });
   });
 
@@ -248,9 +228,7 @@ describe('publishToAbly', () => {
       await publishToAbly({ channel, stream });
 
       // Create
-      const createCall = channel.publishCalls.find(
-        (c) => c.message.name === 'tool:call-1:search',
-      );
+      const createCall = channel.publishCalls.find((c) => c.message.name === 'tool:call-1:search');
       expect(createCall).toBeDefined();
 
       // Delta appends (2) + end append (1)
@@ -258,15 +236,11 @@ describe('publishToAbly', () => {
       expect(channel.appendCalls[0].message.data).toBe('{"query":');
       expect(channel.appendCalls[1].message.data).toBe('"test"}');
       expect(channel.appendCalls[2].message.data).toBe('');
-      expect(channel.appendCalls[2].operation?.metadata?.event).toBe(
-        'tool-input-end',
-      );
+      expect(channel.appendCalls[2].operation?.metadata?.event).toBe('tool-input-end');
 
       // Update for output
       expect(channel.updateCalls).toHaveLength(1);
-      expect(channel.updateCalls[0].message.name).toBe(
-        'tool-output:call-1',
-      );
+      expect(channel.updateCalls[0].message.name).toBe('tool-output:call-1');
       const outputData = JSON.parse(channel.updateCalls[0].message.data);
       expect(outputData.output).toEqual({ results: ['a', 'b'] });
     });
@@ -293,13 +267,9 @@ describe('publishToAbly', () => {
       await publishToAbly({ channel, stream });
 
       // Should be a single create with extras
-      const createCall = channel.publishCalls.find(
-        (c) => c.message.name === 'tool:call-2:getTime',
-      );
+      const createCall = channel.publishCalls.find((c) => c.message.name === 'tool:call-2:getTime');
       expect(createCall).toBeDefined();
-      expect(createCall!.message.extras?.headers?.event).toBe(
-        'tool-input-available',
-      );
+      expect(createCall!.message.extras?.headers?.event).toBe('tool-input-available');
       const inputData = JSON.parse(createCall!.message.data);
       expect(inputData).toEqual({ tz: 'UTC' });
 
@@ -368,15 +338,31 @@ describe('publishToAbly', () => {
       },
       {
         label: 'source-url',
-        chunk: { type: 'source-url', sourceId: 'src-1', url: 'https://example.com', title: 'Example' },
+        chunk: {
+          type: 'source-url',
+          sourceId: 'src-1',
+          url: 'https://example.com',
+          title: 'Example',
+        },
         expectedName: 'source-url',
         expectedData: { sourceId: 'src-1', url: 'https://example.com', title: 'Example' },
       },
       {
         label: 'source-document',
-        chunk: { type: 'source-document', sourceId: 'doc-1', mediaType: 'application/pdf', title: 'Report', filename: 'report.pdf' },
+        chunk: {
+          type: 'source-document',
+          sourceId: 'doc-1',
+          mediaType: 'application/pdf',
+          title: 'Report',
+          filename: 'report.pdf',
+        },
         expectedName: 'source-document',
-        expectedData: { sourceId: 'doc-1', mediaType: 'application/pdf', title: 'Report', filename: 'report.pdf' },
+        expectedData: {
+          sourceId: 'doc-1',
+          mediaType: 'application/pdf',
+          title: 'Report',
+          filename: 'report.pdf',
+        },
       },
       {
         label: 'data-*',
@@ -395,9 +381,7 @@ describe('publishToAbly', () => {
 
       await publishToAbly({ channel, stream });
 
-      const call = channel.publishCalls.find(
-        (c) => c.message.name === expectedName,
-      );
+      const call = channel.publishCalls.find((c) => c.message.name === expectedName);
       expect(call).toBeDefined();
       const data = JSON.parse(call!.message.data);
       for (const [key, value] of Object.entries(expectedData)) {
@@ -412,9 +396,7 @@ describe('publishToAbly', () => {
 
       await publishToAbly({ channel, stream });
 
-      const dataCall = channel.publishCalls.find(
-        (c) => c.message.name === 'data-progress',
-      );
+      const dataCall = channel.publishCalls.find((c) => c.message.name === 'data-progress');
       expect(dataCall).toBeDefined();
       expect(dataCall!.message.extras).toEqual({
         ephemeral: true,
@@ -433,7 +415,7 @@ describe('publishToAbly', () => {
       const origPublish = channel.publish.bind(channel);
 
       // Make appends slow so they're still pending when abort fires
-      let appendResolvers: (() => void)[] = [];
+      const appendResolvers: (() => void)[] = [];
       channel.appendMessage = ((msg: any, op: any) => {
         const result = origAppend(msg, op);
         const p = new Promise<any>((resolve) => {
@@ -456,8 +438,16 @@ describe('publishToAbly', () => {
           streamController.enqueue({ type: 'start' });
           streamController.enqueue({ type: 'start-step' });
           streamController.enqueue({ type: 'text-start', id: 'text-0' } as UIMessageChunk);
-          streamController.enqueue({ type: 'text-delta', id: 'text-0', delta: 'Hello' } as UIMessageChunk);
-          streamController.enqueue({ type: 'text-delta', id: 'text-0', delta: ' world' } as UIMessageChunk);
+          streamController.enqueue({
+            type: 'text-delta',
+            id: 'text-0',
+            delta: 'Hello',
+          } as UIMessageChunk);
+          streamController.enqueue({
+            type: 'text-delta',
+            id: 'text-0',
+            delta: ' world',
+          } as UIMessageChunk);
         },
         pull() {
           // Block until abort cancels the reader
@@ -466,7 +456,11 @@ describe('publishToAbly', () => {
       });
 
       // Start publishing, then abort after a short delay
-      const publishPromise = publishToAbly({ channel: channel as any, stream, abortSignal: controller.signal });
+      const publishPromise = publishToAbly({
+        channel: channel as any,
+        stream,
+        abortSignal: controller.signal,
+      });
 
       // Wait for text-start publish + both text-delta appends to be issued
       await new Promise((r) => setTimeout(r, 50));
@@ -483,7 +477,10 @@ describe('publishToAbly', () => {
 
       // The key assertion: all append operations resolved BEFORE any terminal publish
       const firstTerminalIdx = resolveOrder.findIndex(
-        (entry) => entry.startsWith('publish:step-finish') || entry.startsWith('publish:finish') || entry.startsWith('publish:abort'),
+        (entry) =>
+          entry.startsWith('publish:step-finish') ||
+          entry.startsWith('publish:finish') ||
+          entry.startsWith('publish:abort'),
       );
       const lastAppendIdx = resolveOrder.reduce(
         (max, entry, idx) => (entry.startsWith('append:') ? idx : max),
@@ -537,9 +534,7 @@ describe('publishToAbly', () => {
 
       await publishToAbly({ channel, stream, abortSignal: controller.signal });
 
-      const abortCalls = channel.publishCalls.filter(
-        (c) => c.message.name === 'abort',
-      );
+      const abortCalls = channel.publishCalls.filter((c) => c.message.name === 'abort');
       expect(abortCalls).toHaveLength(1);
     });
 
@@ -558,14 +553,10 @@ describe('publishToAbly', () => {
       // Signal fires after natural completion
       controller.abort();
 
-      const abortCalls = channel.publishCalls.filter(
-        (c) => c.message.name === 'abort',
-      );
+      const abortCalls = channel.publishCalls.filter((c) => c.message.name === 'abort');
       expect(abortCalls).toHaveLength(0);
 
-      const finishCalls = channel.publishCalls.filter(
-        (c) => c.message.name === 'finish',
-      );
+      const finishCalls = channel.publishCalls.filter((c) => c.message.name === 'finish');
       expect(finishCalls).toHaveLength(1);
     });
 
@@ -583,14 +574,10 @@ describe('publishToAbly', () => {
       // Signal fires after error terminal
       controller.abort();
 
-      const abortCalls = channel.publishCalls.filter(
-        (c) => c.message.name === 'abort',
-      );
+      const abortCalls = channel.publishCalls.filter((c) => c.message.name === 'abort');
       expect(abortCalls).toHaveLength(0);
 
-      const errorCalls = channel.publishCalls.filter(
-        (c) => c.message.name === 'error',
-      );
+      const errorCalls = channel.publishCalls.filter((c) => c.message.name === 'error');
       expect(errorCalls).toHaveLength(1);
     });
 
@@ -610,9 +597,7 @@ describe('publishToAbly', () => {
 
       await publishToAbly({ channel, stream, abortSignal: controller.signal });
 
-      const abortCalls = channel.publishCalls.filter(
-        (c) => c.message.name === 'abort',
-      );
+      const abortCalls = channel.publishCalls.filter((c) => c.message.name === 'abort');
       expect(abortCalls).toHaveLength(1);
     });
   });
@@ -627,7 +612,12 @@ describe('publishToAbly', () => {
         { type: 'text-delta', id: 'text-0', delta: 'Hello' },
         { type: 'text-end', id: 'text-0' },
         { type: 'tool-input-start', toolCallId: 'call-1', toolName: 'search' },
-        { type: 'tool-input-available', toolCallId: 'call-1', toolName: 'search', input: { q: 'test' } },
+        {
+          type: 'tool-input-available',
+          toolCallId: 'call-1',
+          toolName: 'search',
+          input: { q: 'test' },
+        },
         { type: 'tool-output-available', toolCallId: 'call-1', output: { results: [] } },
         { type: 'finish-step' },
         { type: 'finish', finishReason: 'stop' },
@@ -663,7 +653,12 @@ describe('publishToAbly', () => {
 
       setTimeout(() => controller.abort(), 20);
 
-      await publishToAbly({ channel, stream, abortSignal: controller.signal, promptId: 'prompt-789' });
+      await publishToAbly({
+        channel,
+        stream,
+        abortSignal: controller.signal,
+        promptId: 'prompt-789',
+      });
 
       const publishNames = channel.publishCalls.map((c) => c.message.name);
       expect(publishNames).toEqual(['abort']);
@@ -705,9 +700,7 @@ describe('publishToAbly', () => {
 
       await publishToAbly({ channel, stream, promptId: 'prompt-tool' });
 
-      const toolCall = channel.publishCalls.find(
-        (c) => c.message.name === 'tool:call-2:getTime',
-      );
+      const toolCall = channel.publishCalls.find((c) => c.message.name === 'tool:call-2:getTime');
       expect(toolCall).toBeDefined();
       expect(toolCall!.message.extras?.headers?.promptId).toBe('prompt-tool');
       expect(toolCall!.message.extras?.headers?.event).toBe('tool-input-available');
@@ -720,9 +713,7 @@ describe('publishToAbly', () => {
 
       await publishToAbly({ channel, stream, promptId: 'prompt-data' });
 
-      const dataCall = channel.publishCalls.find(
-        (c) => c.message.name === 'data-progress',
-      );
+      const dataCall = channel.publishCalls.find((c) => c.message.name === 'data-progress');
       expect(dataCall).toBeDefined();
       expect(dataCall!.message.extras).toEqual({
         ephemeral: true,
@@ -741,14 +732,10 @@ describe('publishToAbly', () => {
         },
       });
 
-      await expect(
-        publishToAbly({ channel, stream: errorStream }),
-      ).rejects.toThrow('Stream broke');
+      await expect(publishToAbly({ channel, stream: errorStream })).rejects.toThrow('Stream broke');
 
       // Should have published error to channel
-      const errorCall = channel.publishCalls.find(
-        (c) => c.message.name === 'error',
-      );
+      const errorCall = channel.publishCalls.find((c) => c.message.name === 'error');
       expect(errorCall).toBeDefined();
       const data = JSON.parse(errorCall!.message.data);
       expect(data.errorText).toBe('Stream broke');

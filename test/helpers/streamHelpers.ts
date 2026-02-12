@@ -19,9 +19,7 @@ export async function collectChunks(
   return chunks;
 }
 
-export function createChunkStream(
-  chunks: UIMessageChunk[],
-): ReadableStream<UIMessageChunk> {
+export function createChunkStream(chunks: UIMessageChunk[]): ReadableStream<UIMessageChunk> {
   return new ReadableStream<UIMessageChunk>({
     start(controller) {
       for (const chunk of chunks) {
