@@ -1,4 +1,4 @@
-# @ably/ai-sdk-transport
+# Ably AI Transport for Vercel AI SDK
 
 Drop-in [Ably](https://ably.com) transport for the [Vercel AI SDK](https://sdk.vercel.ai) — replaces HTTP SSE with persistent, resumable AI chat sessions over Ably pub/sub.
 
