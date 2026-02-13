@@ -46,22 +46,22 @@ Open [http://localhost:3000](http://localhost:3000).
 
 ```
 app/
-├── layout.tsx              # Root layout with AblyProvider
-├── providers.tsx           # Client-side Ably Realtime setup
-├── page.tsx                # Chat UI: useChat + AblyChatTransport + history + presence
-├── globals.css             # Styles
+├── layout.tsx                  # Root layout with AblyProvider
+├── providers.tsx               # Client-side Ably Realtime setup
+├── page.tsx                    # Chat UI: useChat + AblyChatTransport + history + presence
+├── globals.css                 # Styles
 └── api/
-    ├── chat/route.ts       # Server: subscribeToChannel + streamText (Claude)
-    └── ably-token/route.ts # JWT token auth endpoint
+    ├── invite-agent/route.ts   # Server: subscribeToChannel + streamText (Claude)
+    └── ably-token/route.ts     # JWT token auth endpoint
 ```
 
 ## How it works
 
 1. **`providers.tsx`** creates an `Ably.Realtime` client with `authUrl: '/api/ably-token'` and wraps the app in `AblyProvider`.
 
-2. **`page.tsx`** creates an `AblyChatTransport` with the Ably client and a channel name, then POSTs to `/api/chat` to tell the server which channel to subscribe to. On mount it calls `loadChatHistory()` to restore previous messages and `resumeStream()` if a response was mid-flight. It also monitors agent presence with `onAgentPresenceChange()`.
+2. **`page.tsx`** wraps the chat in a `ChannelProvider` and uses the `useChannel` hook to get a channel instance with connection-state-aware attachment. It passes the channel to `AblyChatTransport`, then POSTs to `/api/invite-agent` to tell the server which channel to subscribe to. On mount it calls `loadChatHistory()` to restore previous messages and `resumeStream()` if a response was mid-flight. It also monitors agent presence with `onAgentPresenceChange()`.
 
-3. **`api/chat/route.ts`** calls `subscribeToChannel()` with a handler that runs `streamText()` with Claude and returns the UI message stream. The server enters presence so the client can show agent connectivity status.
+3. **`api/invite-agent/route.ts`** calls `subscribeToChannel()` with a handler that runs `streamText()` with Claude and returns the UI message stream. The server enters presence so the client can show agent connectivity status.
 
 4. **`api/ably-token/route.ts`** signs an Ably JWT with `publish`, `subscribe`, `history`, and `presence` capabilities on the `ait:*` namespace.
 

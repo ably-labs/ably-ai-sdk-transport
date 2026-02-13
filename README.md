@@ -54,7 +54,7 @@ if (history.length > 0) setMessages(history);
 if (hasActiveStream) resumeStream();
 ```
 
-The client publishes messages directly to the Ably channel — no message payload travels over HTTP. A separate `POST` to `/api/chat` tells the server which channel to subscribe to. See [`examples/minimal-chat/`](./examples/minimal-chat/) for a complete working example.
+The client publishes messages directly to the Ably channel — no message payload travels over HTTP. A separate `POST` to `/api/invite-agent` tells the server which channel to subscribe to. See [`examples/minimal-chat/`](./examples/minimal-chat/) for a complete working example.
 
 ### 3. Server — subscribe and respond
 
