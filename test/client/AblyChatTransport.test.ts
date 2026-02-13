@@ -28,7 +28,8 @@ describe('AblyChatTransport', () => {
     return call!.message.extras?.headers?.promptId;
   }
 
-  it('subscribes to channel at construction', () => {
+  it('subscribes to channel after attach resolves', async () => {
+    await new Promise((r) => setTimeout(r, 10));
     expect(mockChannel.listeners.length).toBeGreaterThan(0);
   });
 
@@ -840,6 +841,106 @@ describe('AblyChatTransport', () => {
 
       // Listener should be cleared
       expect(mockChannel.listeners).toHaveLength(0);
+    });
+
+    it('detaches channel when transport owns it (ably+channelName path)', async () => {
+      const detachSpy = vi.spyOn(mockChannel, 'detach');
+      transport.close();
+      expect(detachSpy).toHaveBeenCalled();
+      detachSpy.mockRestore();
+    });
+
+    it('does NOT detach channel when passed externally', async () => {
+      const channelTransport = new AblyChatTransport({ channel: mockChannel });
+      const detachSpy = vi.spyOn(mockChannel, 'detach');
+      channelTransport.close();
+      expect(detachSpy).not.toHaveBeenCalled();
+      detachSpy.mockRestore();
+    });
+  });
+
+  describe('channel construction path', () => {
+    it('accepts a pre-created channel', async () => {
+      const ch = createMockChannel();
+      const t = new AblyChatTransport({ channel: ch });
+      // subscribe happens after attach resolves
+      await new Promise((r) => setTimeout(r, 10));
+      expect(ch.listeners.length).toBeGreaterThan(0);
+      t.close();
+    });
+
+    it('works with channel path for sendMessages', async () => {
+      const ch = createMockChannel();
+      const t = new AblyChatTransport({ channel: ch });
+
+      const stream = await t.sendMessages({
+        trigger: 'submit-message',
+        chatId: 'chat-123',
+        messageId: undefined,
+        messages: makeMessages(),
+        abortSignal: undefined,
+      });
+
+      const promptId = ch.publishCalls.find((c) => c.message.name === 'chat-message')!
+        .message.extras?.headers?.promptId;
+
+      await new Promise((r) => setTimeout(r, 10));
+      ch.simulateMessage({
+        name: 'finish',
+        action: 'message.create',
+        serial: 'S1',
+        data: '{"finishReason":"stop"}',
+        extras: { headers: { role: 'assistant', promptId } },
+      });
+
+      const chunks = await collectChunks(stream);
+      expect(chunks.map((c) => c.type)).toContain('finish');
+      t.close();
+    });
+
+    it('calls onChannelStateChange callback', () => {
+      const ch = createMockChannel();
+      const stateChanges: any[] = [];
+      const t = new AblyChatTransport({
+        channel: ch,
+        onChannelStateChange: (sc) => stateChanges.push(sc),
+      });
+
+      ch.simulateStateChange({ current: 'failed', previous: 'attached' });
+      expect(stateChanges).toHaveLength(1);
+      expect(stateChanges[0].current).toBe('failed');
+
+      t.close();
+    });
+
+    it('removes onChannelStateChange listener on close', () => {
+      const ch = createMockChannel();
+      const offSpy = vi.spyOn(ch, 'off');
+      const handler = vi.fn();
+      const t = new AblyChatTransport({
+        channel: ch,
+        onChannelStateChange: handler,
+      });
+
+      t.close();
+      expect(offSpy).toHaveBeenCalledWith(handler);
+      offSpy.mockRestore();
+    });
+  });
+
+  describe('onAgentPresenceChange', () => {
+    it('guards against callback after unsubscribe', async () => {
+      const callback = vi.fn();
+      const unsubscribe = transport.onAgentPresenceChange(callback);
+
+      // Unsubscribe immediately — before the async presence.get() resolves
+      unsubscribe();
+
+      // Let the microtask queue flush (presence.get() resolves)
+      await new Promise((r) => setTimeout(r, 10));
+
+      // Callback should NOT have been called after unsubscribe
+      expect(callback).not.toHaveBeenCalled();
     });
   });
 });

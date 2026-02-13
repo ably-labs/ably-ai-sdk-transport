@@ -11,12 +11,33 @@ import type { Logger } from '../logger';
 /** Names of messages published by the client — used for echo filtering. */
 const CLIENT_MESSAGE_NAMES = new Set(['chat-message', 'regenerate', 'user-abort']);
 
-export interface AblyChatTransportOptions {
-  ably: Ably.Realtime;
-  channelName: string;
+/**
+ * Options for constructing an {@link AblyChatTransport}.
+ *
+ * Provide **either** a pre-created `channel` (recommended when using ably-js
+ * React hooks / `ChannelProvider`) **or** both `ably` and `channelName` so
+ * that the transport creates and owns the channel internally.
+ */
+export type AblyChatTransportOptions = {
   historyLimit?: number;
   logger?: Logger;
-}
+  /** Called when the channel's state changes (e.g. attached → failed). */
+  onChannelStateChange?: (stateChange: Ably.ChannelStateChange) => void;
+} & (
+  | {
+      /** Pre-configured channel — lifecycle is managed by the caller. */
+      channel: Ably.RealtimeChannel;
+      ably?: never;
+      channelName?: never;
+    }
+  | {
+      /** Ably Realtime client. The transport will create and own the channel. */
+      ably: Ably.Realtime;
+      /** Channel name to subscribe to. */
+      channelName: string;
+      channel?: never;
+    }
+);
 
 export interface LoadChatHistoryResult {
   messages: UIMessage[];
@@ -60,25 +81,44 @@ class MessageBuffer {
 
 export class AblyChatTransport implements ChatTransport<UIMessage> {
   private readonly _channel: Ably.RealtimeChannel;
+  private readonly _ownsChannel: boolean;
   private readonly buffer = new MessageBuffer();
   private readonly historyLimit: number;
-  private readonly attached: Promise<unknown>;
   private readonly listener: (msg: Ably.InboundMessage) => void;
   private readonly logger: Logger;
+  private readonly _onChannelStateChange?: (stateChange: Ably.ChannelStateChange) => void;
+  private readonly _ready: Promise<unknown>;
   private _hasActiveStream = false;
   private activeDrainCtx: HandlerContext | null = null;
 
   constructor(options: AblyChatTransportOptions) {
     this.historyLimit = options.historyLimit ?? 100;
     this.logger = options.logger ?? noopLogger;
-    this._channel = options.ably.channels.get(options.channelName);
+    this._onChannelStateChange = options.onChannelStateChange;
+
+    if (options.channel) {
+      this._channel = options.channel;
+      this._ownsChannel = false;
+    } else {
+      this._channel = options.ably.channels.get(options.channelName);
+      this._ownsChannel = true;
+    }
+
+    if (this._onChannelStateChange) {
+      this._channel.on(this._onChannelStateChange);
+    }
+
     this.listener = (msg: Ably.InboundMessage) => {
       if (msg.name && CLIENT_MESSAGE_NAMES.has(msg.name)) return;
       this.logger.debug(`[${msg.action}] ${msg.name}: ${msg.data}`, msg.extras);
       this.buffer.push(msg);
     };
-    // subscribe() returns a promise that resolves once the channel is attached
-    this.attached = this._channel.subscribe(this.listener);
+
+    // Attach first (sets the serial boundary for untilAttach history),
+    // then subscribe (captures live messages after that boundary).
+    this._ready = this._channel.attach().then(() => {
+      this._channel.subscribe(this.listener);
+    });
   }
 
   /**
@@ -90,10 +130,9 @@ export class AblyChatTransport implements ChatTransport<UIMessage> {
     const limit = options?.limit ?? this.historyLimit;
     const empty: LoadChatHistoryResult = { messages: [], hasActiveStream: false };
 
-    await this.attached;
-
     let items: Ably.InboundMessage[];
     try {
+      await this._ready;
       const history = await this._channel.history({ untilAttach: true, limit });
       items = history.items;
     } catch (err) {
@@ -135,6 +174,8 @@ export class AblyChatTransport implements ChatTransport<UIMessage> {
     // Cancel any active drain synchronously — before any await — so the old
     // stream is closed in the same microtask as the AI SDK's pushMessage().
     this.cancelActiveDrain();
+
+    await this._ready;
 
     const { trigger, messageId, messages, abortSignal } = options;
     const promptId = crypto.randomUUID();
@@ -184,6 +225,7 @@ export class AblyChatTransport implements ChatTransport<UIMessage> {
    * @returns An unsubscribe function.
    */
   onAgentPresenceChange(callback: (isPresent: boolean) => void): () => void {
+    let unsubscribed = false;
     const agentConnections = new Set<string>();
 
     const onEnter = (msg: Ably.PresenceMessage) => {
@@ -209,6 +251,7 @@ export class AblyChatTransport implements ChatTransport<UIMessage> {
     this._channel.presence
       .get()
       .then((members) => {
+        if (unsubscribed) return;
         for (const m of members) {
           if (m.data?.type === 'agent') {
             agentConnections.add(m.connectionId);
@@ -217,11 +260,13 @@ export class AblyChatTransport implements ChatTransport<UIMessage> {
         callback(agentConnections.size > 0);
       })
       .catch(() => {
+        if (unsubscribed) return;
         // Presence unavailable (e.g. channel not attached yet) — treat as no agents.
         callback(false);
       });
 
     return () => {
+      unsubscribed = true;
       this._channel.presence.unsubscribe('enter', onEnter);
       this._channel.presence.unsubscribe('leave', onLeave);
     };
@@ -241,6 +286,12 @@ export class AblyChatTransport implements ChatTransport<UIMessage> {
     this.cancelActiveDrain();
     this.buffer.cancel(); // unconditional — covers edge case where drain was already null
     this._channel.unsubscribe(this.listener);
+    if (this._onChannelStateChange) {
+      this._channel.off(this._onChannelStateChange);
+    }
+    if (this._ownsChannel) {
+      this._channel.detach().catch(() => {});
+    }
   }
 
   /**

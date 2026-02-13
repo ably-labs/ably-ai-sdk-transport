@@ -302,14 +302,32 @@ export function createMockChannel(): Ably.RealtimeChannel & {
       return Promise.resolve();
     },
 
-    on(event: string, listener: StateListener) {
-      const existing = stateListeners.get(event) ?? [];
-      existing.push(listener);
-      stateListeners.set(event, existing);
+    on(eventOrListener: string | StateListener, listener?: StateListener) {
+      if (typeof eventOrListener === 'function') {
+        // on(listener) — listen to all state changes
+        const existing = stateListeners.get('*') ?? [];
+        existing.push(eventOrListener);
+        stateListeners.set('*', existing);
+      } else if (listener) {
+        const existing = stateListeners.get(eventOrListener) ?? [];
+        existing.push(listener);
+        stateListeners.set(eventOrListener, existing);
+      }
     },
 
-    off() {
-      stateListeners.clear();
+    off(eventOrListener?: string | StateListener, listener?: StateListener) {
+      if (typeof eventOrListener === 'function') {
+        // off(listener) — remove from all-events list
+        const all = stateListeners.get('*') ?? [];
+        const idx = all.indexOf(eventOrListener);
+        if (idx !== -1) all.splice(idx, 1);
+      } else if (eventOrListener && listener) {
+        const existing = stateListeners.get(eventOrListener) ?? [];
+        const idx = existing.indexOf(listener);
+        if (idx !== -1) existing.splice(idx, 1);
+      } else {
+        stateListeners.clear();
+      }
     },
 
     simulateMessage(partial: Partial<Ably.InboundMessage>) {
@@ -344,8 +362,14 @@ export function createMockChannel(): Ably.RealtimeChannel & {
         ...partial,
       } as Ably.ChannelStateChange;
 
+      // Notify event-specific listeners
       const eventListeners = stateListeners.get(event) ?? [];
       for (const listener of eventListeners) {
+        listener(change);
+      }
+      // Notify all-events listeners
+      const allListeners = stateListeners.get('*') ?? [];
+      for (const listener of allListeners) {
         listener(change);
       }
     },
