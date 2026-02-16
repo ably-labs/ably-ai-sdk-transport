@@ -1,7 +1,5 @@
 # Ably AI Transport for Vercel AI SDK
 
-> This project is currently experimental.
-
 Drop-in [Ably](https://ably.com) transport for the [Vercel AI SDK](https://sdk.vercel.ai) — replaces HTTP SSE with persistent, resumable AI chat sessions over Ably Pub/Sub.
 
 ## Why Ably instead of the default transport?
@@ -16,10 +14,15 @@ Drop-in [Ably](https://ably.com) transport for the [Vercel AI SDK](https://sdk.v
 | Cancel / stop generation | Abort HTTP request | Cancel propagated to server via channel |
 | Observability | Server logs only | All events (text, tool calls, reasoning) visible on channel |
 
+## Project status
+
+This project is currently experimental. Feedback and contributions are very welcome!
+
 ## Installation
 
 ```bash
-npm install @ably/ai-sdk-transport ably ai
+npm install ably ai
+npm install ably/ably-ai-sdk-transport
 ```
 
 `ably` (>= 2.6.0) and `ai` (>= 6.0.0) are peer dependencies.
