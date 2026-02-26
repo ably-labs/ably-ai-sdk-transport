@@ -447,7 +447,7 @@ describe('AblyChatTransport', () => {
 
       expect(types).toContain('text-start');
       expect(types).toContain('text-end');
-      expect(types).toContain('tool-input-start');
+      expect(types).not.toContain('tool-input-start');
       expect(types).toContain('tool-input-available');
       expect(types).toContain('tool-output-available');
       expect(types).toContain('finish');

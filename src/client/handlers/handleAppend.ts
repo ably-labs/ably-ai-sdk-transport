@@ -2,6 +2,25 @@ import type { InboundMessage } from 'ably';
 import type { HandlerContext } from '../types.js';
 import { parseData, createTrackerFromName } from '../utils.js';
 
+/** Extract optional JSON-encoded fields from extras.headers. */
+function extractOptionalHeaders(
+  headers: Record<string, string> | undefined,
+  keys: string[],
+): Record<string, unknown> {
+  if (!headers) return {};
+  const result: Record<string, unknown> = {};
+  for (const key of keys) {
+    if (headers[key] != null) {
+      try {
+        result[key] = JSON.parse(headers[key]);
+      } catch {
+        result[key] = headers[key];
+      }
+    }
+  }
+  return result;
+}
+
 export function handleAppend(message: InboundMessage, ctx: HandlerContext): void {
   const data = parseData(message.data);
   const event = message.version?.metadata?.event;
@@ -30,6 +49,7 @@ export function handleAppend(message: InboundMessage, ctx: HandlerContext): void
   }
 
   ctx.ensureStarted();
+  const optFields = extractOptionalHeaders(message.extras?.headers, ['providerMetadata']);
 
   // ── Text append ─────────────────────────────────
   if (tracker.type === 'text') {
@@ -40,9 +60,10 @@ export function handleAppend(message: InboundMessage, ctx: HandlerContext): void
           type: 'text-delta',
           id: tracker.id,
           delta: data,
-        });
+          ...optFields,
+        } as any);
       }
-      ctx.controller.enqueue({ type: 'text-end', id: tracker.id });
+      ctx.controller.enqueue({ type: 'text-end', id: tracker.id, ...optFields } as any);
       ctx.serialState.delete(message.serial!);
       return;
     }
@@ -53,7 +74,8 @@ export function handleAppend(message: InboundMessage, ctx: HandlerContext): void
         type: 'text-delta',
         id: tracker.id,
         delta: data,
-      });
+        ...optFields,
+      } as any);
     }
     return;
   }
@@ -67,9 +89,10 @@ export function handleAppend(message: InboundMessage, ctx: HandlerContext): void
           type: 'reasoning-delta',
           id: tracker.id,
           delta: data,
-        });
+          ...optFields,
+        } as any);
       }
-      ctx.controller.enqueue({ type: 'reasoning-end', id: tracker.id });
+      ctx.controller.enqueue({ type: 'reasoning-end', id: tracker.id, ...optFields } as any);
       ctx.serialState.delete(message.serial!);
       return;
     }
@@ -80,7 +103,8 @@ export function handleAppend(message: InboundMessage, ctx: HandlerContext): void
         type: 'reasoning-delta',
         id: tracker.id,
         delta: data,
-      });
+        ...optFields,
+      } as any);
     }
     return;
   }

@@ -13,7 +13,7 @@ describe('publishToAbly', () => {
   });
 
   describe('lifecycle events', () => {
-    it('skips start chunk (client synthesizes)', async () => {
+    it('skips start chunk when it has no messageId or messageMetadata', async () => {
       const stream = createChunkStream([
         { type: 'start' },
         { type: 'start-step' },
@@ -23,9 +23,41 @@ describe('publishToAbly', () => {
 
       await publishToAbly({ channel, stream });
 
-      // start is skipped, first start-step is skipped
       const publishNames = channel.publishCalls.map((c) => c.message.name);
       expect(publishNames).not.toContain('start');
+    });
+
+    it('publishes start chunk with messageId', async () => {
+      const stream = createChunkStream([
+        { type: 'start', messageId: 'msg-42' } as any,
+        { type: 'start-step' },
+        { type: 'finish-step' },
+        { type: 'finish', finishReason: 'stop' },
+      ]);
+
+      await publishToAbly({ channel, stream });
+
+      const startCall = channel.publishCalls.find((c) => c.message.name === 'start');
+      expect(startCall).toBeDefined();
+      const data = JSON.parse(startCall!.message.data);
+      expect(data.messageId).toBe('msg-42');
+    });
+
+    it('publishes start chunk with messageMetadata', async () => {
+      const stream = createChunkStream([
+        { type: 'start', messageId: 'msg-43', messageMetadata: { model: 'gpt-4' } } as any,
+        { type: 'start-step' },
+        { type: 'finish-step' },
+        { type: 'finish', finishReason: 'stop' },
+      ]);
+
+      await publishToAbly({ channel, stream });
+
+      const startCall = channel.publishCalls.find((c) => c.message.name === 'start');
+      expect(startCall).toBeDefined();
+      const data = JSON.parse(startCall!.message.data);
+      expect(data.messageId).toBe('msg-43');
+      expect(data.messageMetadata).toEqual({ model: 'gpt-4' });
     });
 
     it('skips first start-step (client synthesizes)', async () => {
@@ -719,6 +751,165 @@ describe('publishToAbly', () => {
         ephemeral: true,
         headers: { role: 'assistant', promptId: 'prompt-data' },
       });
+    });
+  });
+
+  describe('tool approval/denial', () => {
+    it('publishes tool-approval-request as tool-approval:{toolCallId}', async () => {
+      const stream = createChunkStream([
+        { type: 'start' },
+        { type: 'start-step' },
+        { type: 'tool-input-start', toolCallId: 'c1', toolName: 'dangerous' },
+        { type: 'tool-input-available', toolCallId: 'c1', toolName: 'dangerous', input: {} },
+        { type: 'tool-approval-request', toolCallId: 'c1', approvalId: 'apr-1' } as any,
+        { type: 'finish-step' },
+        { type: 'finish', finishReason: 'stop' },
+      ]);
+
+      await publishToAbly({ channel, stream });
+
+      const approvalCall = channel.publishCalls.find((c) => c.message.name === 'tool-approval:c1');
+      expect(approvalCall).toBeDefined();
+      const data = JSON.parse(approvalCall!.message.data);
+      expect(data.approvalId).toBe('apr-1');
+    });
+
+    it('publishes tool-output-denied as tool-denied:{toolCallId} via updateMessage', async () => {
+      const stream = createChunkStream([
+        { type: 'start' },
+        { type: 'start-step' },
+        { type: 'tool-input-start', toolCallId: 'c1', toolName: 'dangerous' },
+        { type: 'tool-input-available', toolCallId: 'c1', toolName: 'dangerous', input: {} },
+        { type: 'tool-output-denied', toolCallId: 'c1' } as any,
+        { type: 'finish-step' },
+        { type: 'finish', finishReason: 'stop' },
+      ]);
+
+      await publishToAbly({ channel, stream });
+
+      const deniedCall = channel.updateCalls.find((c) => c.message.name === 'tool-denied:c1');
+      expect(deniedCall).toBeDefined();
+      expect(JSON.parse(deniedCall!.message.data)).toEqual({});
+    });
+  });
+
+  describe('optional field forwarding', () => {
+    it('forwards providerMetadata on text-start via extras.headers', async () => {
+      const stream = createChunkStream([
+        { type: 'start' },
+        { type: 'start-step' },
+        { type: 'text-start', id: 'text-0', providerMetadata: { openai: { cached: true } } } as any,
+        { type: 'text-delta', id: 'text-0', delta: 'Hi' },
+        { type: 'text-end', id: 'text-0' },
+        { type: 'finish-step' },
+        { type: 'finish', finishReason: 'stop' },
+      ]);
+
+      await publishToAbly({ channel, stream });
+
+      const createCall = channel.publishCalls.find((c) => c.message.name?.startsWith('text:'));
+      expect(createCall!.message.extras?.headers?.providerMetadata).toBe(
+        JSON.stringify({ openai: { cached: true } }),
+      );
+    });
+
+    it('forwards abort reason', async () => {
+      const stream = createChunkStream([
+        { type: 'start' },
+        { type: 'start-step' },
+        { type: 'abort', reason: 'user cancelled' } as any,
+      ]);
+
+      await publishToAbly({ channel, stream });
+
+      const abortCall = channel.publishCalls.find((c) => c.message.name === 'abort');
+      expect(abortCall).toBeDefined();
+      const data = JSON.parse(abortCall!.message.data);
+      expect(data.reason).toBe('user cancelled');
+    });
+
+    it('does not coerce undefined finishReason to stop', async () => {
+      const stream = createChunkStream([
+        { type: 'start' },
+        { type: 'start-step' },
+        { type: 'finish-step' },
+        { type: 'finish', finishReason: undefined } as any,
+      ]);
+
+      await publishToAbly({ channel, stream });
+
+      const finishCall = channel.publishCalls.find((c) => c.message.name === 'finish');
+      const data = JSON.parse(finishCall!.message.data);
+      expect(data.finishReason).toBeUndefined();
+    });
+
+    it('forwards providerMetadata on file in data', async () => {
+      const stream = createChunkStream([
+        { type: 'start' },
+        { type: 'start-step' },
+        {
+          type: 'file',
+          url: 'https://example.com/img.png',
+          mediaType: 'image/png',
+          providerMetadata: { custom: 'meta' },
+        } as any,
+        { type: 'finish-step' },
+        { type: 'finish', finishReason: 'stop' },
+      ]);
+
+      await publishToAbly({ channel, stream });
+
+      const fileCall = channel.publishCalls.find((c) => c.message.name === 'file');
+      const data = JSON.parse(fileCall!.message.data);
+      expect(data.providerMetadata).toEqual({ custom: 'meta' });
+    });
+
+    it('forwards optional fields on tool-output-available in data', async () => {
+      const stream = createChunkStream([
+        { type: 'start' },
+        { type: 'start-step' },
+        { type: 'tool-input-start', toolCallId: 'c1', toolName: 'search' },
+        { type: 'tool-input-available', toolCallId: 'c1', toolName: 'search', input: {} },
+        {
+          type: 'tool-output-available',
+          toolCallId: 'c1',
+          output: { result: 'ok' },
+          preliminary: true,
+          dynamic: true,
+        } as any,
+        { type: 'finish-step' },
+        { type: 'finish', finishReason: 'stop' },
+      ]);
+
+      await publishToAbly({ channel, stream });
+
+      const updateCall = channel.updateCalls.find((c) => c.message.name === 'tool-output:c1');
+      const data = JSON.parse(updateCall!.message.data);
+      expect(data.preliminary).toBe(true);
+      expect(data.dynamic).toBe(true);
+    });
+
+    it('forwards optional fields on tool-input-start via extras.headers', async () => {
+      const stream = createChunkStream([
+        { type: 'start' },
+        { type: 'start-step' },
+        {
+          type: 'tool-input-start',
+          toolCallId: 'c1',
+          toolName: 'search',
+          dynamic: true,
+          title: 'Search Tool',
+        } as any,
+        { type: 'tool-input-available', toolCallId: 'c1', toolName: 'search', input: {} },
+        { type: 'finish-step' },
+        { type: 'finish', finishReason: 'stop' },
+      ]);
+
+      await publishToAbly({ channel, stream });
+
+      const createCall = channel.publishCalls.find((c) => c.message.name === 'tool:c1:search');
+      expect(createCall!.message.extras?.headers?.dynamic).toBe('true');
+      expect(createCall!.message.extras?.headers?.title).toBe('Search Tool');
     });
   });
 

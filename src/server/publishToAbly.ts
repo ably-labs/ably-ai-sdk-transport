@@ -32,11 +32,15 @@ export async function publishToAbly(options: PublishToAblyOptions): Promise<UIMe
     pendingAppends.length = 0;
   }
 
-  async function publishAbortSequence() {
+  async function publishAbortSequence(reason?: string) {
     await flushAppends();
 
     if (!terminalPublished) {
-      await channel.publish({ name: 'abort', data: '{}', extras });
+      await channel.publish({
+        name: 'abort',
+        data: JSON.stringify(reason != null ? { reason } : {}),
+        extras,
+      });
     }
   }
 
@@ -57,7 +61,16 @@ export async function publishToAbly(options: PublishToAblyOptions): Promise<UIMe
       switch (chunk.type) {
         // ── Lifecycle ─────────────────────────────────
         case 'start': {
-          // Client synthesizes 'start' — nothing to publish
+          const startData: Record<string, unknown> = {};
+          if (chunk.messageId != null) startData.messageId = chunk.messageId;
+          if (chunk.messageMetadata != null) startData.messageMetadata = chunk.messageMetadata;
+          if (Object.keys(startData).length > 0) {
+            await channel.publish({
+              name: 'start',
+              data: JSON.stringify(startData),
+              extras,
+            });
+          }
           break;
         }
 
@@ -80,7 +93,7 @@ export async function publishToAbly(options: PublishToAblyOptions): Promise<UIMe
           await channel.publish({
             name: 'finish',
             data: JSON.stringify({
-              finishReason: chunk.finishReason ?? 'stop',
+              finishReason: chunk.finishReason,
               ...(chunk.messageMetadata != null ? { messageMetadata: chunk.messageMetadata } : {}),
             }),
             extras,
@@ -89,7 +102,7 @@ export async function publishToAbly(options: PublishToAblyOptions): Promise<UIMe
         }
 
         case 'abort': {
-          await publishAbortSequence();
+          await publishAbortSequence((chunk as any).reason);
           terminalPublished = true;
           break;
         }
@@ -122,7 +135,9 @@ export async function publishToAbly(options: PublishToAblyOptions): Promise<UIMe
           const result = await channel.publish({
             name: `text:${uniqueId}`,
             data: '',
-            extras,
+            extras: withOptionalHeaders(extras, {
+              providerMetadata: (chunk as any).providerMetadata,
+            }),
           });
           serials.set(chunk.id, {
             serial: result.serials[0]!,
@@ -136,7 +151,13 @@ export async function publishToAbly(options: PublishToAblyOptions): Promise<UIMe
           if (!state) throw new Error(`No serial for text ${chunk.id}`);
           pendingAppends.push(
             channel.appendMessage(
-              { serial: state.serial, data: chunk.delta, extras },
+              {
+                serial: state.serial,
+                data: chunk.delta,
+                extras: withOptionalHeaders(extras, {
+                  providerMetadata: (chunk as any).providerMetadata,
+                }),
+              },
               { metadata: { event: 'text-delta' } },
             ),
           );
@@ -148,7 +169,13 @@ export async function publishToAbly(options: PublishToAblyOptions): Promise<UIMe
           if (!state) throw new Error(`No serial for text ${chunk.id}`);
           pendingAppends.push(
             channel.appendMessage(
-              { serial: state.serial, data: '', extras },
+              {
+                serial: state.serial,
+                data: '',
+                extras: withOptionalHeaders(extras, {
+                  providerMetadata: (chunk as any).providerMetadata,
+                }),
+              },
               { metadata: { event: 'text-end' } },
             ),
           );
@@ -162,7 +189,9 @@ export async function publishToAbly(options: PublishToAblyOptions): Promise<UIMe
           const result = await channel.publish({
             name: `reasoning:${uniqueId}`,
             data: '',
-            extras,
+            extras: withOptionalHeaders(extras, {
+              providerMetadata: (chunk as any).providerMetadata,
+            }),
           });
           serials.set(chunk.id, {
             serial: result.serials[0]!,
@@ -176,7 +205,13 @@ export async function publishToAbly(options: PublishToAblyOptions): Promise<UIMe
           if (!state) throw new Error(`No serial for reasoning ${chunk.id}`);
           pendingAppends.push(
             channel.appendMessage(
-              { serial: state.serial, data: chunk.delta, extras },
+              {
+                serial: state.serial,
+                data: chunk.delta,
+                extras: withOptionalHeaders(extras, {
+                  providerMetadata: (chunk as any).providerMetadata,
+                }),
+              },
               { metadata: { event: 'reasoning-delta' } },
             ),
           );
@@ -188,7 +223,13 @@ export async function publishToAbly(options: PublishToAblyOptions): Promise<UIMe
           if (!state) throw new Error(`No serial for reasoning ${chunk.id}`);
           pendingAppends.push(
             channel.appendMessage(
-              { serial: state.serial, data: '', extras },
+              {
+                serial: state.serial,
+                data: '',
+                extras: withOptionalHeaders(extras, {
+                  providerMetadata: (chunk as any).providerMetadata,
+                }),
+              },
               { metadata: { event: 'reasoning-end' } },
             ),
           );
@@ -201,7 +242,12 @@ export async function publishToAbly(options: PublishToAblyOptions): Promise<UIMe
           const result = await channel.publish({
             name: `tool:${chunk.toolCallId}:${chunk.toolName}`,
             data: '',
-            extras,
+            extras: withOptionalHeaders(extras, {
+              dynamic: (chunk as any).dynamic,
+              title: (chunk as any).title,
+              providerExecuted: (chunk as any).providerExecuted,
+              providerMetadata: (chunk as any).providerMetadata,
+            }),
           });
           serials.set(chunk.toolCallId, {
             serial: result.serials[0]!,
@@ -237,7 +283,15 @@ export async function publishToAbly(options: PublishToAblyOptions): Promise<UIMe
             const result = await channel.publish({
               name: `tool:${chunk.toolCallId}:${chunk.toolName}`,
               data: JSON.stringify(chunk.input),
-              extras: makeExtras(promptId, { event: 'tool-input-available' }),
+              extras: withOptionalHeaders(
+                makeExtras(promptId, { event: 'tool-input-available' }),
+                {
+                  dynamic: (chunk as any).dynamic,
+                  title: (chunk as any).title,
+                  providerExecuted: (chunk as any).providerExecuted,
+                  providerMetadata: (chunk as any).providerMetadata,
+                },
+              ),
             });
             serials.set(chunk.toolCallId, {
               serial: result.serials[0]!,
@@ -253,7 +307,14 @@ export async function publishToAbly(options: PublishToAblyOptions): Promise<UIMe
           await channel.updateMessage({
             serial: state.serial,
             name: `tool-output:${chunk.toolCallId}`,
-            data: JSON.stringify({ output: chunk.output }),
+            data: JSON.stringify(withOptionalData(
+              { output: chunk.output },
+              {
+                preliminary: (chunk as any).preliminary,
+                dynamic: (chunk as any).dynamic,
+                providerExecuted: (chunk as any).providerExecuted,
+              },
+            )),
             extras,
           });
           break;
@@ -265,7 +326,13 @@ export async function publishToAbly(options: PublishToAblyOptions): Promise<UIMe
           await channel.updateMessage({
             serial: state.serial,
             name: `tool-error:${chunk.toolCallId}`,
-            data: JSON.stringify({ errorText: chunk.errorText }),
+            data: JSON.stringify(withOptionalData(
+              { errorText: chunk.errorText },
+              {
+                dynamic: (chunk as any).dynamic,
+                providerExecuted: (chunk as any).providerExecuted,
+              },
+            )),
             extras,
           });
           break;
@@ -277,7 +344,40 @@ export async function publishToAbly(options: PublishToAblyOptions): Promise<UIMe
             await channel.updateMessage({
               serial: state.serial,
               name: `tool-error:${chunk.toolCallId}`,
-              data: JSON.stringify({ errorText: chunk.errorText }),
+              data: JSON.stringify(withOptionalData(
+                { errorText: chunk.errorText },
+                {
+                  dynamic: (chunk as any).dynamic,
+                  providerExecuted: (chunk as any).providerExecuted,
+                  providerMetadata: (chunk as any).providerMetadata,
+                  title: (chunk as any).title,
+                },
+              )),
+              extras,
+            });
+          }
+          break;
+        }
+
+        // ── Tool approval/denial ────────────────────────
+        case 'tool-approval-request': {
+          const c = chunk as any;
+          await channel.publish({
+            name: `tool-approval:${c.toolCallId}`,
+            data: JSON.stringify({ approvalId: c.approvalId }),
+            extras,
+          });
+          break;
+        }
+
+        case 'tool-output-denied': {
+          const c = chunk as any;
+          const state = serials.get(c.toolCallId);
+          if (state) {
+            await channel.updateMessage({
+              serial: state.serial,
+              name: `tool-denied:${c.toolCallId}`,
+              data: '{}',
               extras,
             });
           }
@@ -288,10 +388,10 @@ export async function publishToAbly(options: PublishToAblyOptions): Promise<UIMe
         case 'file': {
           await channel.publish({
             name: 'file',
-            data: JSON.stringify({
-              url: chunk.url,
-              mediaType: chunk.mediaType,
-            }),
+            data: JSON.stringify(withOptionalData(
+              { url: chunk.url, mediaType: chunk.mediaType },
+              { providerMetadata: (chunk as any).providerMetadata },
+            )),
             extras,
           });
           break;
@@ -300,11 +400,14 @@ export async function publishToAbly(options: PublishToAblyOptions): Promise<UIMe
         case 'source-url': {
           await channel.publish({
             name: 'source-url',
-            data: JSON.stringify({
-              sourceId: chunk.sourceId,
-              url: chunk.url,
-              ...(chunk.title != null ? { title: chunk.title } : {}),
-            }),
+            data: JSON.stringify(withOptionalData(
+              {
+                sourceId: chunk.sourceId,
+                url: chunk.url,
+                ...(chunk.title != null ? { title: chunk.title } : {}),
+              },
+              { providerMetadata: (chunk as any).providerMetadata },
+            )),
             extras,
           });
           break;
@@ -313,12 +416,15 @@ export async function publishToAbly(options: PublishToAblyOptions): Promise<UIMe
         case 'source-document': {
           await channel.publish({
             name: 'source-document',
-            data: JSON.stringify({
-              sourceId: chunk.sourceId,
-              mediaType: chunk.mediaType,
-              title: chunk.title,
-              ...(chunk.filename != null ? { filename: chunk.filename } : {}),
-            }),
+            data: JSON.stringify(withOptionalData(
+              {
+                sourceId: chunk.sourceId,
+                mediaType: chunk.mediaType,
+                title: chunk.title,
+                ...(chunk.filename != null ? { filename: chunk.filename } : {}),
+              },
+              { providerMetadata: (chunk as any).providerMetadata },
+            )),
             extras,
           });
           break;
@@ -376,4 +482,30 @@ function makeExtras(promptId?: string, extra?: Record<string, string>) {
   if (promptId) headers.promptId = promptId;
   if (extra) Object.assign(headers, extra);
   return { headers };
+}
+
+/** Merge optional fields into extras.headers, JSON-encoding non-string values. */
+function withOptionalHeaders(
+  base: { headers: Record<string, string> },
+  fields: Record<string, unknown>,
+): { headers: Record<string, string> } {
+  const headers = { ...base.headers };
+  for (const [key, value] of Object.entries(fields)) {
+    if (value != null) {
+      headers[key] = typeof value === 'string' ? value : JSON.stringify(value);
+    }
+  }
+  return { headers };
+}
+
+/** Conditionally include optional fields in a data object. */
+function withOptionalData(
+  base: Record<string, unknown>,
+  fields: Record<string, unknown>,
+): Record<string, unknown> {
+  const result = { ...base };
+  for (const [key, value] of Object.entries(fields)) {
+    if (value != null) result[key] = value;
+  }
+  return result;
 }
