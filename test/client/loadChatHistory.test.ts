@@ -117,7 +117,7 @@ describe('loadChatHistory', () => {
     expect(result.messages[0].id).toBe('user-1');
     expect(result.messages[1].role).toBe('assistant');
     expect(result.messages[1].id).toBe('t0');
-    expect(result.messages[1].parts).toEqual([{ type: 'text', text: 'Hello there!' }]);
+    expect(result.messages[1].parts).toEqual([{ type: 'text', text: 'Hello there!', state: 'done' }]);
     expect(result.hasActiveStream).toBe(false);
   });
 
@@ -227,7 +227,7 @@ describe('loadChatHistory', () => {
     expect(result.messages[0]).toMatchObject({ role: 'user', id: 'user-1' });
     // Should be the regenerated answer, not the original
     expect(result.messages[1]).toMatchObject({ role: 'assistant', id: 't1' });
-    expect(result.messages[1].parts[0]).toEqual({ type: 'text', text: 'Better answer' });
+    expect(result.messages[1].parts[0]).toEqual({ type: 'text', text: 'Better answer', state: 'done' });
   });
 
   it('handles tool call with output', async () => {
@@ -268,22 +268,19 @@ describe('loadChatHistory', () => {
     expect(result.messages[1].role).toBe('assistant');
 
     const assistantParts = result.messages[1].parts;
-    // Should have tool-invocation and text parts
-    const toolPart = assistantParts.find((p) => p.type === 'tool-invocation');
+    // Should have v6 tool part and text parts
+    const toolPart = assistantParts.find((p: any) => p.type === 'tool-getWeather');
     expect(toolPart).toBeDefined();
     expect(toolPart).toMatchObject({
-      type: 'tool-invocation',
-      toolInvocation: {
-        state: 'result',
-        toolCallId: 'tool-1',
-        toolName: 'getWeather',
-        args: { city: 'SF' },
-        result: { temp: 72 },
-      },
+      type: 'tool-getWeather',
+      toolCallId: 'tool-1',
+      state: 'output-available',
+      input: { city: 'SF' },
+      output: { temp: 72 },
     });
 
     const textPart = assistantParts.find((p) => p.type === 'text');
-    expect(textPart).toMatchObject({ type: 'text', text: 'The weather is sunny.' });
+    expect(textPart).toMatchObject({ type: 'text', text: 'The weather is sunny.', state: 'done' });
   });
 
   it('retains content-complete assistant when finish has not arrived', async () => {
@@ -342,7 +339,7 @@ describe('loadChatHistory', () => {
     expect(result.messages[1]).toMatchObject({ role: 'assistant', id: 't0' });
     expect(result.messages[2]).toMatchObject({ role: 'user', id: 'user-2' });
     expect(result.messages[3]).toMatchObject({ role: 'assistant', id: 't1' });
-    expect(result.messages[3].parts[0]).toEqual({ type: 'text', text: 'I am doing well!' });
+    expect(result.messages[3].parts[0]).toEqual({ type: 'text', text: 'I am doing well!', state: 'done' });
     expect((result.messages[3].metadata as any)?.contentComplete).toBe(true);
   });
 
@@ -374,5 +371,231 @@ describe('loadChatHistory', () => {
       untilAttach: true,
       limit: 200,
     });
+  });
+
+  it('reconstructs tool call with error', async () => {
+    (mockChannel as any).history = () =>
+      Promise.resolve(
+        makeHistoryResult([
+          { name: 'finish', data: '{"finishReason":"stop"}', serial: 'S4' },
+          {
+            name: 'tool-error:tool-1',
+            data: JSON.stringify({ errorText: 'API failed' }),
+            serial: 'S3',
+          },
+          {
+            name: 'tool:tool-1:getWeather',
+            data: JSON.stringify({ city: 'SF' }),
+            serial: 'S2',
+          },
+          {
+            name: 'chat-message',
+            data: JSON.stringify({
+              message: {
+                id: 'user-1',
+                role: 'user',
+                parts: [{ type: 'text', text: "What's the weather?" }],
+              },
+              chatId: 'chat-1',
+            }),
+            serial: 'S1',
+          },
+        ]),
+      );
+
+    const result = await transport.loadChatHistory();
+    expect(result.messages).toHaveLength(2);
+    const toolPart = result.messages[1].parts.find((p: any) => p.type === 'tool-getWeather') as any;
+    expect(toolPart).toBeDefined();
+    expect(toolPart).toMatchObject({
+      type: 'tool-getWeather',
+      toolCallId: 'tool-1',
+      state: 'output-error',
+      input: { city: 'SF' },
+      errorText: 'API failed',
+    });
+  });
+
+  it('reconstructs file parts', async () => {
+    (mockChannel as any).history = () =>
+      Promise.resolve(
+        makeHistoryResult([
+          { name: 'finish', data: '{"finishReason":"stop"}', serial: 'S3' },
+          {
+            name: 'file',
+            data: JSON.stringify({ url: 'https://example.com/img.png', mediaType: 'image/png' }),
+            serial: 'S2',
+          },
+          {
+            name: 'chat-message',
+            data: JSON.stringify({
+              message: { id: 'user-1', role: 'user', parts: [{ type: 'text', text: 'Show image' }] },
+              chatId: 'chat-1',
+            }),
+            serial: 'S1',
+          },
+        ]),
+      );
+
+    const result = await transport.loadChatHistory();
+    expect(result.messages).toHaveLength(2);
+    expect(result.messages[1].parts[0]).toMatchObject({
+      type: 'file',
+      url: 'https://example.com/img.png',
+      mediaType: 'image/png',
+    });
+  });
+
+  it('reconstructs source-url parts', async () => {
+    (mockChannel as any).history = () =>
+      Promise.resolve(
+        makeHistoryResult([
+          { name: 'finish', data: '{"finishReason":"stop"}', serial: 'S3' },
+          {
+            name: 'source-url',
+            data: JSON.stringify({ sourceId: 'src-1', url: 'https://example.com', title: 'Example' }),
+            serial: 'S2',
+          },
+          {
+            name: 'chat-message',
+            data: JSON.stringify({
+              message: { id: 'user-1', role: 'user', parts: [{ type: 'text', text: 'Find source' }] },
+              chatId: 'chat-1',
+            }),
+            serial: 'S1',
+          },
+        ]),
+      );
+
+    const result = await transport.loadChatHistory();
+    expect(result.messages).toHaveLength(2);
+    expect(result.messages[1].parts[0]).toMatchObject({
+      type: 'source-url',
+      sourceId: 'src-1',
+      url: 'https://example.com',
+      title: 'Example',
+    });
+  });
+
+  it('reconstructs source-document parts', async () => {
+    (mockChannel as any).history = () =>
+      Promise.resolve(
+        makeHistoryResult([
+          { name: 'finish', data: '{"finishReason":"stop"}', serial: 'S3' },
+          {
+            name: 'source-document',
+            data: JSON.stringify({
+              sourceId: 'doc-1',
+              mediaType: 'application/pdf',
+              title: 'Report',
+              filename: 'report.pdf',
+            }),
+            serial: 'S2',
+          },
+          {
+            name: 'chat-message',
+            data: JSON.stringify({
+              message: { id: 'user-1', role: 'user', parts: [{ type: 'text', text: 'Get doc' }] },
+              chatId: 'chat-1',
+            }),
+            serial: 'S1',
+          },
+        ]),
+      );
+
+    const result = await transport.loadChatHistory();
+    expect(result.messages).toHaveLength(2);
+    expect(result.messages[1].parts[0]).toMatchObject({
+      type: 'source-document',
+      sourceId: 'doc-1',
+      mediaType: 'application/pdf',
+      title: 'Report',
+      filename: 'report.pdf',
+    });
+  });
+
+  it('reconstructs data-* parts', async () => {
+    (mockChannel as any).history = () =>
+      Promise.resolve(
+        makeHistoryResult([
+          { name: 'finish', data: '{"finishReason":"stop"}', serial: 'S3' },
+          {
+            name: 'data-progress',
+            data: JSON.stringify({ data: { percent: 75 }, id: 'p1' }),
+            serial: 'S2',
+          },
+          {
+            name: 'chat-message',
+            data: JSON.stringify({
+              message: { id: 'user-1', role: 'user', parts: [{ type: 'text', text: 'Go' }] },
+              chatId: 'chat-1',
+            }),
+            serial: 'S1',
+          },
+        ]),
+      );
+
+    const result = await transport.loadChatHistory();
+    expect(result.messages).toHaveLength(2);
+    expect(result.messages[1].parts[0]).toMatchObject({
+      type: 'data-progress',
+      data: { percent: 75 },
+      id: 'p1',
+    });
+  });
+
+  it('reconstructs metadata messages', async () => {
+    (mockChannel as any).history = () =>
+      Promise.resolve(
+        makeHistoryResult([
+          { name: 'finish', data: '{"finishReason":"stop"}', serial: 'S4' },
+          {
+            name: 'metadata',
+            data: JSON.stringify({ messageMetadata: { model: 'gpt-4', tokens: 100 } }),
+            serial: 'S3',
+          },
+          { name: 'text:t0', data: 'Hello', serial: 'S2' },
+          {
+            name: 'chat-message',
+            data: JSON.stringify({
+              message: { id: 'user-1', role: 'user', parts: [{ type: 'text', text: 'Hi' }] },
+              chatId: 'chat-1',
+            }),
+            serial: 'S1',
+          },
+        ]),
+      );
+
+    const result = await transport.loadChatHistory();
+    expect(result.messages).toHaveLength(2);
+    expect((result.messages[1].metadata as any)?.model).toBe('gpt-4');
+    expect((result.messages[1].metadata as any)?.tokens).toBe(100);
+  });
+
+  it('reconstructs start message setting assistant ID', async () => {
+    (mockChannel as any).history = () =>
+      Promise.resolve(
+        makeHistoryResult([
+          { name: 'finish', data: '{"finishReason":"stop"}', serial: 'S4' },
+          { name: 'text:t0', data: 'Hello', serial: 'S3' },
+          {
+            name: 'start',
+            data: JSON.stringify({ messageId: 'assistant-id-42' }),
+            serial: 'S2',
+          },
+          {
+            name: 'chat-message',
+            data: JSON.stringify({
+              message: { id: 'user-1', role: 'user', parts: [{ type: 'text', text: 'Hi' }] },
+              chatId: 'chat-1',
+            }),
+            serial: 'S1',
+          },
+        ]),
+      );
+
+    const result = await transport.loadChatHistory();
+    expect(result.messages).toHaveLength(2);
+    expect(result.messages[1].id).toBe('assistant-id-42');
   });
 });

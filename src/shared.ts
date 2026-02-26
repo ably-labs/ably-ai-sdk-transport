@@ -17,7 +17,7 @@ export function parseJsonData(data: unknown): Record<string, unknown> {
 export const TERMINAL_NAMES = new Set(['finish', 'error', 'abort']);
 
 /** Names to skip when reconstructing messages. */
-const SKIP_NAMES = new Set(['step-finish', 'metadata', 'user-abort']);
+const SKIP_NAMES = new Set(['step-finish', 'user-abort']);
 
 /**
  * Reconstruct UIMessage[] from a chronological list of Ably history messages.
@@ -30,21 +30,33 @@ const SKIP_NAMES = new Set(['step-finish', 'metadata', 'user-abort']);
 export function reconstructMessages(chronological: InboundMessage[]): UIMessage[] {
   const messages: UIMessage[] = [];
   let currentAssistant: UIMessage | null = null;
+  let pendingMessageId: string | null = null;
+  let pendingMessageMetadata: unknown = null;
 
   function finalizeAssistant() {
     if (currentAssistant && currentAssistant.parts.length > 0) {
       messages.push(currentAssistant);
     }
     currentAssistant = null;
+    pendingMessageId = null;
+    pendingMessageMetadata = null;
+    assistantIdFromStart = false;
   }
+
+  let assistantIdFromStart = false;
 
   function ensureAssistant(): UIMessage {
     if (!currentAssistant) {
+      assistantIdFromStart = pendingMessageId != null;
       currentAssistant = {
-        id: crypto.randomUUID(),
+        id: pendingMessageId ?? crypto.randomUUID(),
         role: 'assistant',
         parts: [],
+        ...(pendingMessageMetadata != null ? { metadata: pendingMessageMetadata } : {}),
       };
+      // Reset pending so they don't leak to a subsequent assistant
+      pendingMessageId = null;
+      pendingMessageMetadata = null;
     }
     return currentAssistant;
   }
@@ -95,11 +107,12 @@ export function reconstructMessages(chronological: InboundMessage[]): UIMessage[
       const id = name.slice(5);
       const assistant = ensureAssistant();
       // Use the text ID as the assistant message ID if this is the first text part
-      if (assistant.parts.length === 0) {
+      // (unless a start message already set a specific ID)
+      if (assistant.parts.length === 0 && !assistantIdFromStart) {
         assistant.id = id;
       }
       if (data.length > 0) {
-        assistant.parts.push({ type: 'text', text: data });
+        assistant.parts.push({ type: 'text', text: data, state: 'done' } as any);
       }
       // Mark content complete if version metadata has text-end
       const event = (msg as any).version?.metadata?.event;
@@ -113,7 +126,7 @@ export function reconstructMessages(chronological: InboundMessage[]): UIMessage[
     if (name.startsWith('reasoning:')) {
       const assistant = ensureAssistant();
       if (data.length > 0) {
-        assistant.parts.push({ type: 'reasoning', text: data, providerMetadata: {} });
+        assistant.parts.push({ type: 'reasoning', text: data, state: 'done' } as any);
       }
       const event = (msg as any).version?.metadata?.event;
       if (event === 'reasoning-end') {
@@ -139,13 +152,10 @@ export function reconstructMessages(chronological: InboundMessage[]): UIMessage[
       }
 
       assistant.parts.push({
-        type: 'tool-invocation',
-        toolInvocation: {
-          state: 'call',
-          toolCallId,
-          toolName,
-          args: input as Record<string, unknown>,
-        },
+        type: `tool-${toolName}`,
+        toolCallId,
+        state: 'input-available',
+        input: input as Record<string, unknown>,
       } as any);
       const event = (msg as any).version?.metadata?.event;
       if (event === 'tool-input-end') {
@@ -160,15 +170,12 @@ export function reconstructMessages(chronological: InboundMessage[]): UIMessage[
       const parsed = parseJsonData(msg.data);
       const assistant = ensureAssistant();
 
-      // Find and update the matching tool-invocation part
+      // Find and update the matching tool part
       for (const part of assistant.parts) {
         const p = part as any;
-        if (p.type === 'tool-invocation' && p.toolInvocation.toolCallId === toolCallId) {
-          p.toolInvocation = {
-            ...p.toolInvocation,
-            state: 'result',
-            result: parsed.output,
-          };
+        if (p.toolCallId === toolCallId) {
+          p.state = 'output-available';
+          p.output = parsed.output;
           break;
         }
       }
@@ -183,14 +190,118 @@ export function reconstructMessages(chronological: InboundMessage[]): UIMessage[
 
       for (const part of assistant.parts) {
         const p = part as any;
-        if (p.type === 'tool-invocation' && p.toolInvocation.toolCallId === toolCallId) {
-          p.toolInvocation = {
-            ...p.toolInvocation,
-            state: 'result',
-            result: (parsed.errorText as string) ?? 'Unknown tool error',
-          };
+        if (p.toolCallId === toolCallId) {
+          p.state = 'output-error';
+          p.errorText = (parsed.errorText as string) ?? 'Unknown tool error';
           break;
         }
+      }
+      continue;
+    }
+
+    // ── Tool approval ────────────────────────────────
+    if (name.startsWith('tool-approval:')) {
+      const toolCallId = name.slice(14);
+      const parsed = parseJsonData(msg.data);
+      const assistant = ensureAssistant();
+      // Find the matching tool part and update its state
+      for (const part of assistant.parts) {
+        const p = part as any;
+        if (p.toolCallId === toolCallId) {
+          p.state = 'approval-required';
+          p.approvalId = parsed.approvalId;
+          break;
+        }
+      }
+      continue;
+    }
+
+    // ── Tool denied ─────────────────────────────────
+    if (name.startsWith('tool-denied:')) {
+      const toolCallId = name.slice(12);
+      const assistant = ensureAssistant();
+      for (const part of assistant.parts) {
+        const p = part as any;
+        if (p.toolCallId === toolCallId) {
+          p.state = 'output-denied';
+          break;
+        }
+      }
+      continue;
+    }
+
+    // ── File part ───────────────────────────────────
+    if (name === 'file') {
+      const parsed = parseJsonData(msg.data);
+      const assistant = ensureAssistant();
+      assistant.parts.push({
+        type: 'file',
+        url: parsed.url as string,
+        mediaType: parsed.mediaType as string,
+        ...(parsed.providerMetadata != null ? { providerMetadata: parsed.providerMetadata } : {}),
+      } as any);
+      continue;
+    }
+
+    // ── Source URL part ─────────────────────────────
+    if (name === 'source-url') {
+      const parsed = parseJsonData(msg.data);
+      const assistant = ensureAssistant();
+      assistant.parts.push({
+        type: 'source-url',
+        sourceId: parsed.sourceId as string,
+        url: parsed.url as string,
+        ...(parsed.title != null ? { title: parsed.title as string } : {}),
+        ...(parsed.providerMetadata != null ? { providerMetadata: parsed.providerMetadata } : {}),
+      } as any);
+      continue;
+    }
+
+    // ── Source document part ────────────────────────
+    if (name === 'source-document') {
+      const parsed = parseJsonData(msg.data);
+      const assistant = ensureAssistant();
+      assistant.parts.push({
+        type: 'source-document',
+        sourceId: parsed.sourceId as string,
+        mediaType: parsed.mediaType as string,
+        title: parsed.title as string,
+        ...(parsed.filename != null ? { filename: parsed.filename as string } : {}),
+        ...(parsed.providerMetadata != null ? { providerMetadata: parsed.providerMetadata } : {}),
+      } as any);
+      continue;
+    }
+
+    // ── Data parts ──────────────────────────────────
+    if (name.startsWith('data-')) {
+      const parsed = parseJsonData(msg.data);
+      const assistant = ensureAssistant();
+      assistant.parts.push({
+        type: name,
+        data: parsed.data,
+        ...(parsed.id != null ? { id: parsed.id as string } : {}),
+      } as any);
+      continue;
+    }
+
+    // ── Metadata ────────────────────────────────────
+    if (name === 'metadata') {
+      const parsed = parseJsonData(msg.data);
+      const assistant = ensureAssistant();
+      if (parsed.messageMetadata != null) {
+        assistant.metadata = { ...(assistant.metadata as any), ...parsed.messageMetadata as any };
+      }
+      continue;
+    }
+
+    // ── Start (messageId) ───────────────────────────
+    if (name === 'start') {
+      const parsed = parseJsonData(msg.data);
+      if (parsed.messageId != null) {
+        pendingMessageId = parsed.messageId as string;
+      }
+      if (parsed.messageMetadata != null) {
+        pendingMessageMetadata = parsed.messageMetadata;
       }
       continue;
     }

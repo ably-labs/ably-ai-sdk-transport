@@ -5,10 +5,40 @@ import { parseData, parseJsonData } from '../utils.js';
 
 type FinishChunk = Extract<UIMessageChunk, { type: 'finish' }>;
 
+/** Extract optional JSON-encoded fields from extras.headers. */
+function extractOptionalHeaders(
+  headers: Record<string, string>,
+  keys: string[],
+): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  for (const key of keys) {
+    if (headers[key] != null) {
+      try {
+        result[key] = JSON.parse(headers[key]);
+      } catch {
+        result[key] = headers[key];
+      }
+    }
+  }
+  return result;
+}
+
 export function handleCreate(message: InboundMessage, ctx: HandlerContext): void {
   const name = message.name ?? '';
   const data = parseData(message.data);
   const extras = message.extras?.headers ?? {};
+
+  // ── Start message (messageId / messageMetadata) ─
+  if (name === 'start') {
+    const parsed = parseJsonData(message.data);
+    ctx.controller.enqueue({
+      type: 'start',
+      ...(parsed.messageId != null ? { messageId: parsed.messageId as string } : {}),
+      ...(parsed.messageMetadata != null ? { messageMetadata: parsed.messageMetadata } : {}),
+    } as any);
+    ctx.emitState.hasEmittedStart = true;
+    return;
+  }
 
   // ── Streaming text ──────────────────────────────
   if (name.startsWith('text:')) {
@@ -19,7 +49,8 @@ export function handleCreate(message: InboundMessage, ctx: HandlerContext): void
       id,
       accumulated: '',
     });
-    ctx.controller.enqueue({ type: 'text-start', id });
+    const optFields = extractOptionalHeaders(extras, ['providerMetadata']);
+    ctx.controller.enqueue({ type: 'text-start', id, ...optFields } as any);
     return;
   }
 
@@ -32,7 +63,8 @@ export function handleCreate(message: InboundMessage, ctx: HandlerContext): void
       id,
       accumulated: '',
     });
-    ctx.controller.enqueue({ type: 'reasoning-start', id });
+    const optFields = extractOptionalHeaders(extras, ['providerMetadata']);
+    ctx.controller.enqueue({ type: 'reasoning-start', id, ...optFields } as any);
     return;
   }
 
@@ -43,7 +75,11 @@ export function handleCreate(message: InboundMessage, ctx: HandlerContext): void
     const toolName = parts.slice(2).join(':');
     ctx.ensureStarted();
 
-    // Non-streaming tool call: full input in one create
+    const toolOptFields = extractOptionalHeaders(extras, [
+      'dynamic', 'title', 'providerExecuted', 'providerMetadata',
+    ]);
+
+    // Non-streaming tool call: full input in one create — emit tool-input-available directly
     if (extras.event === 'tool-input-available') {
       ctx.serialState.set(message.serial!, {
         type: 'tool-input',
@@ -51,18 +87,14 @@ export function handleCreate(message: InboundMessage, ctx: HandlerContext): void
         toolName,
         accumulated: data,
       });
-      ctx.controller.enqueue({
-        type: 'tool-input-start',
-        toolCallId,
-        toolName,
-      });
       const input = JSON.parse(data || '{}');
       ctx.controller.enqueue({
         type: 'tool-input-available',
         toolCallId,
         toolName,
         input,
-      });
+        ...toolOptFields,
+      } as any);
       return;
     }
 
@@ -77,7 +109,20 @@ export function handleCreate(message: InboundMessage, ctx: HandlerContext): void
       type: 'tool-input-start',
       toolCallId,
       toolName,
-    });
+      ...toolOptFields,
+    } as any);
+    return;
+  }
+
+  // ── Tool approval ──────────────────────────────
+  if (name.startsWith('tool-approval:')) {
+    const toolCallId = name.slice(14);
+    const parsed = parseJsonData(message.data);
+    ctx.controller.enqueue({
+      type: 'tool-approval-request',
+      toolCallId,
+      approvalId: parsed.approvalId as string,
+    } as any);
     return;
   }
 
@@ -113,7 +158,11 @@ export function handleCreate(message: InboundMessage, ctx: HandlerContext): void
 
   if (name === 'abort') {
     ctx.closed = true;
-    ctx.controller.enqueue({ type: 'abort' });
+    const parsed = parseJsonData(message.data);
+    ctx.controller.enqueue({
+      type: 'abort',
+      ...(parsed.reason != null ? { reason: parsed.reason as string } : {}),
+    } as any);
     ctx.controller.close();
     return;
   }
@@ -135,7 +184,8 @@ export function handleCreate(message: InboundMessage, ctx: HandlerContext): void
       type: 'file',
       url: parsed.url as string,
       mediaType: parsed.mediaType as string,
-    });
+      ...(parsed.providerMetadata != null ? { providerMetadata: parsed.providerMetadata } : {}),
+    } as any);
     return;
   }
 
@@ -147,7 +197,8 @@ export function handleCreate(message: InboundMessage, ctx: HandlerContext): void
       sourceId: parsed.sourceId as string,
       url: parsed.url as string,
       ...(parsed.title != null ? { title: parsed.title as string } : {}),
-    });
+      ...(parsed.providerMetadata != null ? { providerMetadata: parsed.providerMetadata } : {}),
+    } as any);
     return;
   }
 
@@ -160,7 +211,8 @@ export function handleCreate(message: InboundMessage, ctx: HandlerContext): void
       mediaType: parsed.mediaType as string,
       title: parsed.title as string,
       ...(parsed.filename != null ? { filename: parsed.filename as string } : {}),
-    });
+      ...(parsed.providerMetadata != null ? { providerMetadata: parsed.providerMetadata } : {}),
+    } as any);
     return;
   }
 

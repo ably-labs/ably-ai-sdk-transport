@@ -6,6 +6,20 @@ export function handleUpdate(message: InboundMessage, ctx: HandlerContext): void
   const name = message.name ?? '';
   const data = parseData(message.data);
 
+  // ── Tool denied (intentional update) ────────────
+  if (name.startsWith('tool-denied:')) {
+    const toolCallId = name.slice(12);
+    ctx.controller.enqueue({ type: 'tool-output-denied', toolCallId } as any);
+    // Clean up serial state for this tool
+    for (const [serial, state] of ctx.serialState) {
+      if (state.type === 'tool-input' && state.id === toolCallId) {
+        ctx.serialState.delete(serial);
+        break;
+      }
+    }
+    return;
+  }
+
   // ── Tool output (intentional update) ────────────
   if (name.startsWith('tool-output:')) {
     const toolCallId = name.slice(12);
@@ -15,7 +29,10 @@ export function handleUpdate(message: InboundMessage, ctx: HandlerContext): void
       type: 'tool-output-available',
       toolCallId,
       output: parsed.output,
-    });
+      ...(parsed.preliminary != null ? { preliminary: parsed.preliminary } : {}),
+      ...(parsed.dynamic != null ? { dynamic: parsed.dynamic } : {}),
+      ...(parsed.providerExecuted != null ? { providerExecuted: parsed.providerExecuted } : {}),
+    } as any);
     // Clean up serial state for this tool
     for (const [serial, state] of ctx.serialState) {
       if (state.type === 'tool-input' && state.id === toolCallId) {
@@ -35,7 +52,9 @@ export function handleUpdate(message: InboundMessage, ctx: HandlerContext): void
       type: 'tool-output-error',
       toolCallId,
       errorText: (parsed.errorText as string) ?? 'Unknown tool error',
-    });
+      ...(parsed.dynamic != null ? { dynamic: parsed.dynamic } : {}),
+      ...(parsed.providerExecuted != null ? { providerExecuted: parsed.providerExecuted } : {}),
+    } as any);
     for (const [serial, state] of ctx.serialState) {
       if (state.type === 'tool-input' && state.id === toolCallId) {
         ctx.serialState.delete(serial);

@@ -50,8 +50,8 @@ describe('handleCreate', () => {
     },
   );
 
-  // 4. tool:{callId}:{toolName} with tool-input-available
-  it('tool:{callId}:{toolName} with tool-input-available — enqueues tool-input-start + tool-input-available with parsed input', () => {
+  // 4. tool:{callId}:{toolName} with tool-input-available (non-streaming)
+  it('tool:{callId}:{toolName} with tool-input-available — enqueues only tool-input-available with parsed input (no tool-input-start)', () => {
     const inputData = { query: 'hello' };
     const msg = buildInboundMessage({
       name: 'tool:call-2:search',
@@ -70,7 +70,6 @@ describe('handleCreate', () => {
       accumulated: JSON.stringify(inputData),
     });
     expect(controller.chunks).toEqual([
-      { type: 'tool-input-start', toolCallId: 'call-2', toolName: 'search' },
       { type: 'tool-input-available', toolCallId: 'call-2', toolName: 'search', input: inputData },
     ]);
   });
@@ -207,6 +206,130 @@ describe('handleCreate', () => {
     expect(controller.chunks).toEqual([
       { type: 'data-custom', data: { foo: 'bar' }, id: 'dc-1', transient: true },
     ]);
+  });
+
+  // ── Tool approval ───────────────────────────────────────────────────
+
+  it('tool-approval — enqueues tool-approval-request chunk', () => {
+    const msg = buildInboundMessage({
+      name: 'tool-approval:call-99',
+      data: JSON.stringify({ approvalId: 'apr-1' }),
+    });
+
+    handleCreate(msg, ctx);
+
+    expect(controller.chunks).toEqual([
+      { type: 'tool-approval-request', toolCallId: 'call-99', approvalId: 'apr-1' },
+    ]);
+  });
+
+  // ── Optional field extraction ───────────────────────────────────────
+
+  it('text-start — extracts providerMetadata from extras.headers', () => {
+    const msg = buildInboundMessage({
+      name: 'text:part-1',
+      serial: 'ser-1',
+      extras: { headers: { providerMetadata: '{"openai":{"cached":true}}' } },
+    });
+
+    handleCreate(msg, ctx);
+
+    expect(controller.chunks[0]).toMatchObject({
+      type: 'text-start',
+      id: 'part-1',
+      providerMetadata: { openai: { cached: true } },
+    });
+  });
+
+  it('abort — extracts reason from data', () => {
+    const msg = buildInboundMessage({
+      name: 'abort',
+      data: JSON.stringify({ reason: 'user cancelled' }),
+    });
+
+    handleCreate(msg, ctx);
+
+    expect(controller.chunks[0]).toMatchObject({
+      type: 'abort',
+      reason: 'user cancelled',
+    });
+  });
+
+  it('file — extracts providerMetadata from data', () => {
+    const msg = buildInboundMessage({
+      name: 'file',
+      data: JSON.stringify({
+        url: 'https://example.com/img.png',
+        mediaType: 'image/png',
+        providerMetadata: { custom: 'meta' },
+      }),
+    });
+
+    handleCreate(msg, ctx);
+
+    expect(controller.chunks[0]).toMatchObject({
+      type: 'file',
+      url: 'https://example.com/img.png',
+      mediaType: 'image/png',
+      providerMetadata: { custom: 'meta' },
+    });
+  });
+
+  it('tool — extracts optional fields from extras.headers for non-streaming tool', () => {
+    const msg = buildInboundMessage({
+      name: 'tool:call-5:myTool',
+      serial: 'ser-5',
+      data: JSON.stringify({ q: 'test' }),
+      extras: {
+        headers: {
+          event: 'tool-input-available',
+          dynamic: 'true',
+          title: '"My Tool"',
+          providerMetadata: '{"x":1}',
+        },
+      },
+    });
+
+    handleCreate(msg, ctx);
+
+    expect(controller.chunks[0]).toMatchObject({
+      type: 'tool-input-available',
+      toolCallId: 'call-5',
+      toolName: 'myTool',
+      input: { q: 'test' },
+      dynamic: true,
+      title: 'My Tool',
+      providerMetadata: { x: 1 },
+    });
+  });
+
+  // ── Start message ───────────────────────────────────────────────────
+
+  it('start — emits start chunk with messageId and sets hasEmittedStart', () => {
+    const msg = buildInboundMessage({
+      name: 'start',
+      data: JSON.stringify({ messageId: 'msg-42', messageMetadata: { model: 'gpt-4' } }),
+    });
+
+    handleCreate(msg, ctx);
+
+    expect(controller.chunks).toEqual([
+      { type: 'start', messageId: 'msg-42', messageMetadata: { model: 'gpt-4' } },
+    ]);
+    expect(ctx.emitState.hasEmittedStart).toBe(true);
+    expect(ensureStarted).not.toHaveBeenCalled();
+  });
+
+  it('start — emits start chunk without optional fields when absent', () => {
+    const msg = buildInboundMessage({
+      name: 'start',
+      data: JSON.stringify({}),
+    });
+
+    handleCreate(msg, ctx);
+
+    expect(controller.chunks).toEqual([{ type: 'start' }]);
+    expect(ctx.emitState.hasEmittedStart).toBe(true);
   });
 
   // 16. unknown message name

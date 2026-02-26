@@ -208,6 +208,79 @@ describe('handleUpdate', () => {
     expect(enqueued).toEqual([]);
   });
 
+  // ─── Tool denied ───────────────────────────────────────────────────
+
+  it('enqueues tool-output-denied for a tool-denied update and cleans serial state', () => {
+    const toolCallId = 'call-denied';
+    ctx.serialState.set('serial-denied', {
+      type: 'tool-input',
+      id: toolCallId,
+      toolName: 'dangerous',
+      accumulated: '{}',
+    });
+
+    const msg = makeUpdateMessage({
+      name: `tool-denied:${toolCallId}`,
+      data: '{}',
+    });
+
+    handleUpdate(msg, ctx);
+
+    expect(enqueued).toEqual([{ type: 'tool-output-denied', toolCallId }]);
+    expect(ctx.serialState.has('serial-denied')).toBe(false);
+  });
+
+  // ─── Optional field extraction ─────────────────────────────────────
+
+  it('tool-output extracts preliminary and dynamic from data', () => {
+    const toolCallId = 'call-opt';
+    ctx.serialState.set('serial-opt', {
+      type: 'tool-input',
+      id: toolCallId,
+      toolName: 'myTool',
+      accumulated: '{}',
+    });
+
+    const msg = makeUpdateMessage({
+      name: `tool-output:${toolCallId}`,
+      data: JSON.stringify({ output: { r: 1 }, preliminary: true, dynamic: true }),
+    });
+
+    handleUpdate(msg, ctx);
+
+    expect(enqueued[0]).toMatchObject({
+      type: 'tool-output-available',
+      toolCallId,
+      output: { r: 1 },
+      preliminary: true,
+      dynamic: true,
+    });
+  });
+
+  it('tool-error extracts dynamic from data', () => {
+    const toolCallId = 'call-err-opt';
+    ctx.serialState.set('serial-err-opt', {
+      type: 'tool-input',
+      id: toolCallId,
+      toolName: 'failTool',
+      accumulated: '{}',
+    });
+
+    const msg = makeUpdateMessage({
+      name: `tool-error:${toolCallId}`,
+      data: JSON.stringify({ errorText: 'failed', dynamic: true }),
+    });
+
+    handleUpdate(msg, ctx);
+
+    expect(enqueued[0]).toMatchObject({
+      type: 'tool-output-error',
+      toolCallId,
+      errorText: 'failed',
+      dynamic: true,
+    });
+  });
+
   // ─── 11. tool-output cleans up the correct serial ──────────────────
 
   it('tool-output removes only the serial whose tracker matches the toolCallId', () => {

@@ -306,7 +306,6 @@ describe('roundtrip: publishToAbly → client handlers', () => {
     expect(types).toEqual([
       'start',
       'start-step',
-      'tool-input-start',
       'tool-input-available',
       'tool-output-available',
       'finish-step',

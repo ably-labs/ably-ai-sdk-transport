@@ -213,8 +213,8 @@ export async function subscribeToChannel(
   // message handling. This prevents processing messages with incomplete state.
   try {
     const result = await channel.history({ untilAttach: true, limit: historyLimit });
-    const items = result.items;
-    if (items.length > 0) {
+    const items = result?.items;
+    if (items && items.length > 0) {
       const chronological = [...items].reverse();
       const seeded = reconstructMessages(chronological);
       const existingIds = new Set(messages.map((m) => m.id));
