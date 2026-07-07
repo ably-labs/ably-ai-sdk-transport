@@ -1,6 +1,11 @@
-# Ably AI Transport for Vercel AI SDK
+# Deprecated: Ably AI Transport for Vercel AI SDK
 
-Drop-in [Ably](https://ably.com) transport for the [Vercel AI SDK](https://sdk.vercel.ai) — replaces HTTP SSE with persistent, resumable AI chat sessions over Ably Pub/Sub.
+> [!WARNING]
+> **This repository is deprecated.** Development has moved to [ably/ably-ai-transport-js](https://github.com/ably/ably-ai-transport-js). See the [Ably AI Transport documentation](https://ably.com/docs/ai-transport).
+
+---
+
+Experimental drop-in [Ably](https://ably.com) transport for the [Vercel AI SDK](https://sdk.vercel.ai) — replaces HTTP SSE with persistent, resumable AI chat sessions over Ably Pub/Sub.
 
 ## Why Ably instead of the default transport?
 
